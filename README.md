@@ -1,264 +1,236 @@
 # Hospital capacity data pipeline
 
-An end-to-end data pipeline: three public datasets are ingested with full
-provenance, cleaned in Python, modelled into a dimensional warehouse in SQL,
-gated by 29 declarative data quality assertions, and published as a dashboard —
-all with one command.
+This project answers a simple question with a lot of messy public data: **how
+full did hospitals get during COVID-19, and how did Australia compare?**
+
+Getting to that answer takes five steps, and this repository automates all of
+them. It downloads three public datasets, cleans them up, loads them into a
+properly structured database, checks its own numbers, and draws a dashboard.
+One command, about three seconds.
 
 ```bash
 make setup && make all
 ```
 
-**[▶ View the published dashboard](https://shobhana25.github.io/End-to-end-data-pipeline-project/)**  ·  [Architecture](docs/architecture.md)  ·  [Data dictionary](docs/data_dictionary.md)  ·  [Adding a source](docs/adding_a_source.md)
+**[View the dashboard](https://shobhana25.github.io/End-to-end-data-pipeline-project/)** ·
+[How it's built](docs/architecture.md) ·
+[What every column means](docs/data_dictionary.md) ·
+[Adding your own data source](docs/adding_a_source.md)
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/dashboard-dark.png">
-  <img alt="The published dashboard: headline figures, Australian ICU and hospital occupancy over time, and an international peak comparison." src="docs/dashboard-light.png">
+  <img alt="The dashboard: headline figures, Australian ICU and hospital occupancy over time, and an international comparison." src="docs/dashboard-light.png">
 </picture>
-
----
 
 ## What it does
 
 ```
-ingest ──▶ stage ──▶ transform ──▶ quality ──▶ dashboard
-Python     Python      SQL          SQL         static HTML
+download  →  clean  →  organise  →  check  →  publish
+ Python      Python      SQL         SQL       HTML
 ```
 
-| Stage | What happens |
-| --- | --- |
-| **Ingest** | Declared sources are fetched with retries and exponential backoff, streamed to a temporary file and atomically renamed into an immutable landing zone. Every payload is SHA-256 checksummed and recorded in a manifest that becomes a table in the warehouse. |
-| **Stage** | Each file is checked against its declared column contract, typed, normalised, deduplicated on its natural key, and written as Parquet. Free-text indicator labels are parsed into structured attributes; statistical outliers are flagged. |
-| **Transform** | Plain SQL — no templating, no macros — builds three conformed dimensions, two facts at different grains, and four reporting marts in DuckDB. Every model is `CREATE OR REPLACE`, so the build is idempotent. |
-| **Quality** | 29 declarative assertions covering key uniqueness, the declared fact grain, referential integrity across the star, domain values, business rules and an independent rate reconciliation. Results are written to the warehouse. A blocking failure stops the run. |
-| **Dashboard** | A self-contained HTML page rendered from the reporting marts, plus a Streamlit app for exploration. No CDN, no bundler, no charting library — one file that opens anywhere. |
+**Download.** Fetches each dataset over the internet, retrying if the network
+hiccups. Files are written to a temporary name and only renamed into place once
+they arrive complete, so a dropped connection can never leave a half-written
+file that looks fine. Everything is fingerprinted with a checksum, so you can
+prove you got the same bytes as anyone else.
 
-Roughly **115,000 fact rows across 50 reporting locations, 2020–2024**, built
-from scratch in about 2.5 seconds.
+**Clean.** Checks each file still has the columns it is supposed to have. If a
+publisher renames a column, the run stops there with a clear message instead of
+producing a wrong number three steps later. Then it fixes types, removes
+duplicates, and unpacks the publisher's free-text labels into proper fields.
 
-## What the pipeline found
+**Organise.** Loads everything into a star schema: three reference tables
+describing dates, places and measures, and two tables of measurements that join
+to them. This is the standard way analytics databases are laid out, and it is
+what makes questions like "ICU occupancy by region by month" a short query
+rather than a puzzle.
 
-The publisher supplies a population-adjusted rate. Rather than trust it, the
-warehouse recomputes it from an independent population source and keeps the
-difference as a measure — which turned up something real:
+**Check.** Runs 29 automated tests against the finished database. Are the keys
+unique? Do all the joins resolve? Are the values possible? Do the rates match
+an independent calculation? If any of these fail, the run stops before the
+dashboard is refreshed. A stale dashboard is better than a confidently wrong
+one.
 
-| Location | Publisher's implied denominator | World Bank population | Median gap |
+**Publish.** Renders a single self-contained HTML page from the database. No
+external scripts, no chart library, no build step. It opens anywhere, including
+offline.
+
+Roughly 115,000 daily observations across 50 places, 2020 to 2024.
+
+## What the data turned out to hide
+
+The source already provides a population-adjusted rate. Rather than take it on
+trust, this pipeline recalculates the same rate from World Bank population
+figures and keeps the difference as a number it can test.
+
+That caught something real.
+
+| Place | Publisher is dividing by | World Bank says | Gap |
 | --- | ---: | ---: | ---: |
-| Cyprus | ≈ 896,000 | 1,317,309 | **−32%** |
-| Poland | ≈ 39,857,000 | 36,981,559 | −7% |
-| *everyone else* | | | *96.99% of rows agree within 5%* |
+| Cyprus | about 896,000 | 1,317,309 | **−32%** |
+| Poland | about 39,857,000 | 36,981,559 | −7% |
+| everyone else | | | 97% agree within 5% |
 
-<sub>The publisher's denominator is not published — it is back-solved from the count
-and the rate it reports, so it lands within a few hundred of a round figure.</sub>
+Cyprus is not a rounding error. The hospital figures cover only the
+government-controlled area of the island, while the World Bank population
+covers the whole island. The two numbers were never counting the same people.
+Poland's smaller gap has a duller explanation: the two sources sit either side
+of the 2021 census revision.
 
-Cyprus is not a rounding difference. The hospital returns cover the
-**government-controlled area**; the World Bank series covers the **whole
-island**. The two numbers were never measuring the same population.
+This changed a real decision. Because the publisher's population figure matches
+the area its bed counts actually come from, the dashboard compares countries
+using *their* rate, and keeps the independently calculated one running quietly
+in the background as a check. Both cases are now automated tests, so if a
+population figure changes upstream, it shows up as a failing build rather than
+a wrong chart.
 
-That changed a modelling decision. Because the publisher aligns its denominator
-with the geography its numerator actually covers, `reported_per_100k` — not the
-derived rate — is what the dashboard compares across countries, and the derived
-rate stays as an automated control. Poland's smaller gap is the two sources
-sitting either side of the 2021 census revision.
-
-Both are now assertions: one requires 95% of rows to agree within 5%, and
-another warns if any location *other than* the documented Cyprus case drifts
-past 10%. A denominator silently rebased upstream shows up as a failing test
-rather than as a quietly wrong chart.
-
-## Quick start
+## Try it
 
 ```bash
 git clone https://github.com/shobhana25/End-to-end-data-pipeline-project.git
 cd End-to-end-data-pipeline-project
 
-make setup          # install dependencies
-make all            # fetch, build, test and publish  (~2.5s after the download)
+make setup     # install dependencies
+make all       # download, build, check and publish
 open docs/index.html
 ```
 
-Individual stages, and everything else:
+Useful individual commands:
 
 ```bash
-make ingest         # fetch sources into the landing zone
-make stage          # clean into typed Parquet
-make transform      # build the star schema
-make quality        # run the 29 assertions
-make dashboard      # regenerate docs/index.html
+make offline     # rebuild everything with no internet at all
+make test        # 126 tests, also no internet needed
+make lint        # style and formatting
+make app         # launch the interactive Streamlit version
+make dashboard   # just redraw the page
 
-make offline        # rebuild everything with no network at all
-make test           # 124 tests, no network needed
-make lint           # ruff check + format check
-make app            # interactive Streamlit dashboard
+python -m pipelines.cli dashboard --focus NZL    # lead with a different country
 ```
 
-Or use the CLI directly:
+Exit codes mean something, which matters if this ever runs on a schedule:
+`0` fine, `1` the data failed its checks, `2` the pipeline itself broke.
 
-```bash
-python -m pipelines.cli all --offline --verbose
-python -m pipelines.cli dashboard --focus NZL      # lead with a different country
-```
-
-Exit codes are meaningful: `0` success, `1` a blocking data quality failure,
-`2` a stage crashed. A scheduler can tell "the data is wrong" from "the
-pipeline broke".
-
-## The data model
+## How the database is laid out
 
 ```
                     ┌──────────────┐
-                    │   dim_date   │   1,828 rows · gapless calendar
+                    │   dim_date   │   1,828 rows, one per day
                     └──────┬───────┘
-                           │ date_key
+                           │
    ┌──────────────┐        │        ┌────────────────┐
    │ dim_location │────────┼────────│ dim_indicator  │
-   │   254 rows   │        │        │    5 rows      │
-   └──────┬───────┘ location_key    └───────┬────────┘
-          │                │  indicator_key │
+   │   254 rows   │        │        │     5 rows     │
+   └──────┬───────┘        │        └───────┬────────┘
           │         ┌──────▼────────────────▼──────┐
           │         │   fct_hospital_activity      │  115,262 rows
-          │         │  grain: location × date ×    │
-          │         │         indicator            │
+          │         │  one row per place, day      │
+          │         │  and measure                 │
           │         └──────────────────────────────┘
-          │
           │         ┌──────────────────────────────┐
           └────────▶│   fct_population_annual      │   13,945 rows
-                    │  grain: location × year      │
                     └──────────────────────────────┘
 ```
 
-A few decisions worth defending, with the reasoning in
-[`docs/architecture.md`](docs/architecture.md):
+A few choices worth explaining, with the full reasoning in
+[docs/architecture.md](docs/architecture.md):
 
-- **Stock vs flow is on the dimension.** Occupancy is a count of beds filled at
-  an instant — summing it across days counts the same patient once per night.
-  Admissions are events in a period and may be summed. `is_additive_over_time`
-  records which, so the monthly mart aggregates each measure correctly instead
-  of relying on the next person to remember.
-- **The unit is pivoted onto the fact.** "Daily ICU occupancy" and "Daily ICU
-  occupancy per million" are one measurement expressed two ways, so they belong
-  on one fact row rather than as two dimension members.
-- **Population is a fact, not a dimension attribute.** It is measured, and it
-  changes every year.
-- **The dimension is bigger than the fact.** All 249 ISO countries are in
-  `dim_location` though only ~50 report activity: a conformed dimension
-  describes the domain, the facts describe what was measured.
-- **Every dimension has an Unknown member**, and an assertion then proves no
-  fact row actually uses one.
+**Some numbers can be added up and some cannot.** Occupancy counts beds full at
+one moment. Adding it across days counts the same patient once per night, which
+means nothing. Admissions count events over a period, so they *can* be added.
+The database records which is which, so the monthly figures aggregate correctly
+without anyone having to remember the rule.
 
-## Data quality
+**Population lives in its own table.** It gets measured every year and it
+changes, so it belongs with the other measurements rather than pinned to a
+place as though it were fixed.
 
-Assertions are declared in [`config/quality_tests.yml`](config/quality_tests.yml),
-not written as code, so adding one is a paragraph a reviewer can read:
+**The places table is bigger than the data.** All 249 countries are listed
+though only 50 report hospital figures. A reference table should describe the
+world; the measurement tables describe what was actually measured.
+
+## How you know it works
+
+**29 checks on the data.** These are written as configuration, not code, so
+they read like plain statements of intent:
 
 ```yaml
   - name: fct_activity_grain_is_unique
     description: >
-      The declared grain of the fact table - one row per location, date and
-      indicator. An unenforced grain is only a hope, so it is asserted here.
+      One row per location, date and indicator. An unenforced grain is only a
+      hope, so it is asserted here.
     model: fct_hospital_activity
     type: unique_combination
     columns: [date_key, location_key, indicator_key]
 ```
 
-Supported types: `not_null`, `unique`, `unique_combination`, `accepted_values`,
-`relationships`, `row_count`, `expression`, and arbitrary `sql`. Each has a
-severity — `error` fails the build, `warn` is recorded for a human. Every
-result is written to `meta_quality_results`, so quality history is queryable
-alongside the data it describes.
+**126 tests on the code**, all runnable with no internet, in about three
+seconds. They run the whole pipeline against small sample files kept in the
+repository. Those samples are real rows taken from the real data, so every
+awkward case is still there at a size that runs instantly.
 
-The suite is itself tested. `tests/test_quality_engine.py` injects ten specific
-defects — a duplicated key, an orphaned foreign key, a negative bed count, a
-gap in the calendar, an unknown domain value — into a scratch copy of the
-warehouse and asserts that the matching assertion catches each one, **and** that
-the unrelated assertions stay green. A suite that has never been seen to fail
-is not evidence of anything.
+**The checks are themselves tested.** A test file deliberately breaks the
+database in ten specific ways (duplicate key, broken join, negative bed count,
+a missing day in the calendar) and confirms that the right check catches each
+one, and that the others stay quiet. A test suite nobody has ever seen fail is
+not evidence of anything.
 
-## Testing
+CI runs the style checks, the test suite on two Python versions, and a full
+offline pipeline run on every push.
 
-```
-124 tests · no network required · runs in about 3 seconds
-```
+## Where the data comes from
 
-The suite builds the whole pipeline — ingest through dashboard — against small
-fixtures committed in `tests/fixtures/`. They are genuine rows sampled from the
-real feeds, so every quirk the pipeline has to handle is still present at a size
-that runs instantly: the non-ISO `OWID_ENG` code, the World Bank aggregate rows,
-and Cyprus's denominator mismatch.
+| Dataset | Published by | Licence |
+| --- | --- | --- |
+| [Hospital and ICU activity](https://github.com/owid/covid-19-data/tree/master/public/data/hospitalizations) | Our World in Data, compiled from national health agencies | CC BY 4.0 |
+| [Population by country and year](https://github.com/datasets/population) | World Bank | CC BY 4.0 |
+| [Country and region codes](https://github.com/lukes/ISO-3166-Countries-with-Regional-Codes) | ISO 3166 and UN M49 | CC BY-SA 4.0 |
 
-What is covered:
+These three were chosen because they are openly licensed, stable, and
+reproducible: the pipeline records a checksum for each, so anyone can confirm
+they downloaded exactly the same data.
 
-- **Staging** — the indicator parser against every published label, contract
-  enforcement, outlier flagging scoped to its own series.
-- **Ingestion** — checksums, the manifest, retry on 5xx, *no* retry on 404, and
-  that a failed download leaves neither a partial file nor a damaged previous one.
-- **The model** — that the star joins without fanning out or losing rows, that
-  World Bank aggregates never reach the population fact, that a derived rate
-  matches a hand calculation, that the build is idempotent.
-- **The quality engine** — defect injection, as above.
-- **Charts** — axis arithmetic, bar geometry, and escaping of hostile labels.
-- **End to end** — the published page contains figures that match the
-  warehouse, and loads nothing from the network.
+**A note on AIHW.** The Australian Institute of Health and Welfare would be the
+natural source for this analysis on Australian data, and there is a template
+entry for it in `config/sources.yml`. It ships switched off because AIHW
+publishes most of its data as spreadsheets attached to individual report
+releases rather than at stable web addresses, so there is no durable link to
+pin. [docs/adding_a_source.md](docs/adding_a_source.md) walks through wiring an
+AIHW extract in, including the state and financial-year handling it needs.
 
-CI runs lint, the suite on Python 3.11 and 3.12, and a full offline pipeline run
-that uploads the generated dashboard as an artifact.
+### Things to keep in mind
 
-## Data sources
+- The hospital data stopped being published in August 2024. This is a
+  historical record, not a live feed.
+- Reporting completeness varies a lot by country. The database grades every
+  series, and 19 of 139 come out as sparse.
+- Cyprus's population-adjusted figures are not comparable with other countries',
+  for the reason described above.
 
-| Source | Publisher | Licence | Role |
-| --- | --- | --- | --- |
-| [COVID-19 hospital and ICU activity](https://github.com/owid/covid-19-data/tree/master/public/data/hospitalizations) | Our World in Data, compiled from national health agencies | CC BY 4.0 | Fact feed |
-| [Total population by country and year](https://github.com/datasets/population) | World Bank (WDI, `SP.POP.TOTL`) | CC BY 4.0 | Independent denominator |
-| [ISO 3166-1 with UN regional codes](https://github.com/lukes/ISO-3166-Countries-with-Regional-Codes) | ISO 3166-1 / UN M49 | CC BY-SA 4.0 | Conformed geography |
-
-These three were chosen because they are openly licensed, stably addressable,
-and reproducible byte for byte by anyone reading this — the pipeline records a
-SHA-256 for each, so a reader can verify they got the same data.
-
-**On AIHW.** The Australian Institute of Health and Welfare is the natural
-source for this analysis on Australian data, and `config/sources.yml` carries a
-template entry for it. It ships disabled because AIHW publishes most collections
-as XLSX workbooks attached to a specific report release rather than as stable
-endpoints, so there is no durable URL to pin. The pipeline is source-agnostic —
-[`docs/adding_a_source.md`](docs/adding_a_source.md) walks through wiring an
-AIHW extract in, including the state/territory and financial-year modelling it
-needs.
-
-### Limitations
-
-- The upstream hospital series **closed in August 2024**; this is a historical
-  warehouse, not a live feed. `series_has_not_regressed` guards against the
-  published file being truncated in a future republish.
-- Reporting coverage varies by country. `mart_location_coverage` grades every
-  series, and 19 of 139 series are graded *Sparse* — cross-country comparison
-  should account for that rather than assume equal coverage.
-- Cyprus's population-derived rates are not comparable with other countries'
-  for the reason above. The reconciliation mart flags this explicitly.
-
-## Layout
+## What's in the repository
 
 ```
-config/           source registry, quality suite, model prose, location overrides
-pipelines/        ingest · stage · warehouse · quality · dashboard · charts · cli
-sql/staging/      typed views over the staged Parquet
-sql/marts/        the star schema and reporting marts, in build order
-dashboard/app.py  the interactive Streamlit app
-scripts/          data dictionary generator (fails the build on doc drift)
-tests/            124 tests + fixtures, all offline
-docs/             the published dashboard and the documentation
+config/       which data to download, and the checks to run against it
+pipelines/    the Python: download, clean, load, check, publish
+sql/          the database models, in the order they are built
+dashboard/    the interactive Streamlit version
+tests/        126 tests plus the sample data they run against
+docs/         the published dashboard and the written documentation
 ```
 
-## Publishing the dashboard
+## Putting the dashboard online
 
-`docs/index.html` is committed, so GitHub Pages serves it with no build step:
-**Settings → Pages → Source: *Deploy from a branch* → `main` / `/docs`**.
+`docs/index.html` is committed to the repository, so GitHub can serve it
+directly with no build step:
 
-`.github/workflows/refresh.yml` re-runs the pipeline against the live sources
-and commits the regenerated dashboard. It is manual-only by default; uncomment
-the `schedule:` block to run it weekly. The quality gate runs first, so nothing
-is ever committed from a warehouse that failed its assertions.
+**Settings → Pages → Source: Deploy from a branch → `main` / `/docs`**
+
+There is also a workflow (`.github/workflows/refresh.yml`) that re-runs the
+whole pipeline against live data and commits the updated dashboard. It only
+runs when triggered by hand; uncomment the schedule block to make it weekly.
+The checks run first, so a failed build never gets published.
 
 ## Licence
 
-Pipeline code: [MIT](LICENSE). The datasets remain under their publishers'
-licences, listed above and recorded in `config/sources.yml`.
+The code is [MIT](LICENSE). The datasets stay under their own licences, listed
+above.

@@ -10,16 +10,16 @@ flowchart LR
         A3["ISO 3166-1<br/>country codes"]
     end
 
-    subgraph ingest["1 · Ingest — Python"]
+    subgraph ingest["1 · Ingest (Python)"]
         B["Landing zone<br/><i>immutable, checksummed</i>"]
         B2[("meta_ingestion_runs<br/>URL · SHA-256 · bytes")]
     end
 
-    subgraph stage["2 · Stage — Python"]
+    subgraph stage["2 · Stage (Python)"]
         C["Typed Parquet<br/><i>contract check, parse, dedupe, flag</i>"]
     end
 
-    subgraph transform["3 · Transform — SQL"]
+    subgraph transform["3 · Transform (SQL)"]
         D["Staging views"]
         E["Star schema<br/>3 dims · 2 facts"]
         F["Reporting marts"]
@@ -102,7 +102,7 @@ Full column-level documentation: [`data_dictionary.md`](data_dictionary.md).
 ## Why the work is split the way it is
 
 The brief for this project was "clean it in SQL *and* Python", and the split is
-not arbitrary — each language does what it is better at.
+not arbitrary. Each language does what it is better at.
 
 **Python does the things SQL expresses badly.**
 
@@ -111,7 +111,7 @@ not arbitrary — each language does what it is better at.
   schema change fails loudly at the front door rather than producing a wrong
   number three layers down.
 - *Parsing free text into structure.* The publisher packs four separate facts
-  into one string — `"Daily ICU occupancy per million"` is a frequency, a care
+  into one string. `"Daily ICU occupancy per million"` is a frequency, a care
   setting, a metric type and a unit. `parse_indicator` turns that into typed
   attributes, and refuses to guess: an unrecognised label raises rather than
   silently dropping rows from the model.
@@ -135,7 +135,7 @@ on the simple side of it deliberately.
 
 **Every dimension has an Unknown member (`-1`).** Without one, an unmatched
 fact either vanishes into an inner join or blocks the load. With one, it lands
-somewhere countable — and `fct_activity_has_no_unknown_members` then asserts
+somewhere countable, and `fct_activity_has_no_unknown_members` then asserts
 that nothing actually does.
 
 **The unit is pivoted onto the fact, not into the dimension.** "Daily ICU
@@ -183,7 +183,7 @@ sql/staging/      typed views over the staged Parquet
 sql/marts/        the star schema and the reporting marts, in build order
 dashboard/        the Streamlit app
 scripts/          data dictionary generator
-tests/            124 tests, all runnable offline against committed fixtures
+tests/            126 tests, all runnable offline against committed fixtures
 docs/             the published dashboard and this documentation
 data/             landing zone, staged Parquet, DuckDB file (all gitignored)
 ```

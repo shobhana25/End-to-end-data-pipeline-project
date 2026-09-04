@@ -85,9 +85,24 @@ def test_dashboard_reports_figures_from_the_warehouse(rendered, scalar):
     assert f"{peak:.2f}" in rendered
 
 
-def test_dashboard_names_every_source_it_used(rendered, query):
-    for (name,) in query("SELECT DISTINCT source_name FROM meta_ingestion_runs"):
-        assert name in rendered
+def test_dashboard_credits_every_publisher(rendered):
+    """The page no longer lists the internal source keys, but the licences
+    still require each publisher to be credited on the page itself."""
+    for publisher in ("Our World in Data", "World Bank", "ISO 3166"):
+        assert publisher in rendered, f"{publisher} is not credited"
+
+
+def test_dashboard_opens_by_saying_what_it_shows(rendered):
+    """A reader who knows nothing about the project should be able to tell what
+    the page is within the first paragraph."""
+    opening = rendered[: rendered.index("</header>")]
+    assert "What this shows" in opening
+    assert "hospitals and intensive care units" in opening
+
+
+def test_dashboard_uses_no_em_dashes(rendered):
+    for form in ("\u2014", "&mdash;"):
+        assert form not in rendered, f"em dash ({form}) in the published page"
 
 
 def test_dashboard_surfaces_the_quality_result(rendered):

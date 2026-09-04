@@ -42,7 +42,6 @@ class DashboardData:
     peak_ranking: list[dict]
     variance_bands: list[dict]
     denominator_notes: list[dict]
-    sources: list[dict]
     quality: list[dict]
     quality_summary: dict
     model_rows: list[dict]
@@ -176,22 +175,6 @@ def collect(layout: Paths | None = None, focus: str = DEFAULT_FOCUS) -> Dashboar
             """,
         )
 
-        sources = _rows(
-            connection,
-            """
-            WITH latest AS (
-                SELECT source_name, max(fetched_at_utc) AS fetched_at_utc
-                FROM meta_ingestion_runs GROUP BY source_name
-            )
-            SELECT m.source_name, m.url, m.bytes_downloaded, m.sha256, m.fetched_at_utc
-            FROM meta_ingestion_runs AS m
-            JOIN latest AS l
-              ON l.source_name = m.source_name AND l.fetched_at_utc = m.fetched_at_utc
-            QUALIFY row_number() OVER (PARTITION BY m.source_name ORDER BY m.sha256) = 1
-            ORDER BY m.bytes_downloaded DESC
-            """,
-        )
-
         quality: list[dict] = []
         quality_summary: dict = {}
         has_quality = _one(
@@ -245,7 +228,6 @@ def collect(layout: Paths | None = None, focus: str = DEFAULT_FOCUS) -> Dashboar
         peak_ranking=peak_ranking,
         variance_bands=variance_bands,
         denominator_notes=denominator_notes,
-        sources=sources,
         quality=quality,
         quality_summary=quality_summary,
         model_rows=model_rows,
@@ -332,6 +314,8 @@ header.masthead { margin-bottom: 28px; }
 }
 h1 { font-size: 30px; line-height: 1.2; margin: 0 0 10px; font-weight: 640; letter-spacing: -0.015em; }
 .standfirst { font-size: 16px; color: var(--text-secondary); margin: 0; max-width: 68ch; }
+.standfirst b { color: var(--text-primary); font-weight: 640; }
+.standfirst.secondary { font-size: 14.5px; color: var(--text-muted); margin-top: 12px; }
 .masthead-meta {
   margin-top: 16px; font-size: 13px; color: var(--text-muted);
   display: flex; flex-wrap: wrap; gap: 6px 18px;
@@ -419,6 +403,29 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monosp
   margin: 18px 0 0; color: var(--text-secondary); font-size: 14px; max-width: 74ch;
 }
 .note b { color: var(--text-primary); }
+.note + .note { border-left-color: var(--axis); }
+
+.quality-summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px 14px; }
+.quality-note { color: var(--text-secondary); font-size: 14px; max-width: 68ch; }
+
+details { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
+details summary {
+  cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text-secondary);
+  list-style: none; display: inline-flex; align-items: center; gap: 7px;
+  padding: 4px 2px; border-radius: 6px;
+}
+details summary::-webkit-details-marker { display: none; }
+details summary::before {
+  content: "▸"; font-size: 11px; color: var(--text-muted);
+  transition: transform 0.15s ease;
+}
+details[open] summary::before { transform: rotate(90deg); }
+details summary:hover { color: var(--text-primary); }
+details summary:focus-visible { outline: 2px solid var(--series-1); outline-offset: 2px; }
+details > .table-scroll { margin-top: 12px; }
+@media (prefers-reduced-motion: reduce) {
+  details summary::before { transition: none; }
+}
 
 footer { margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 13px; }
 footer a { color: var(--text-secondary); }
@@ -554,16 +561,16 @@ def render_body(data: DashboardData) -> str:
     quality_tile = (
         _tile(
             f"{_n(q.get('passed'))}/{_n(q.get('total'))}",
-            "Data quality tests passed",
-            "0 blocking failures" if not q.get("blocking") else f"{_n(q.get('blocking'))} blocking",
+            "Automated checks passed",
+            "none failing" if not q.get("blocking") else f"{_n(q.get('blocking'))} failing",
             good=not q.get("blocking"),
         )
         if q
         else ""
     )
     tiles = (
-        _tile(_n(s.get("fact_rows")), "Fact rows", "one per location, date and measure")
-        + _tile(_n(s.get("locations")), "Reporting locations", "conformed to ISO 3166")
+        _tile(_n(s.get("fact_rows")), "Daily observations", "one per place, day and measure")
+        + _tile(_n(s.get("locations")), "Places reporting", "countries, plus the four UK nations")
         + _tile(
             f"{_date(s.get('first_date'))[-4:]} – {_date(s.get('last_date'))[-4:]}",  # noqa: RUF001 - thin space + en dash are deliberate
             "Period covered",
@@ -621,7 +628,7 @@ def render_body(data: DashboardData) -> str:
                 else ""
             ),
             tooltip=(
-                f"{row['location_name']} — peak {row['peak_per_100k']:.2f} per 100k "
+                f"{row['location_name']}: peak {row['peak_per_100k']:.2f} per 100k "
                 f"on {_date(row['peak_per_100k_date'])}, {row['days_observed']:,} days reported"
             ),
         )
@@ -673,26 +680,6 @@ def render_body(data: DashboardData) -> str:
     )
 
     # -- Lineage and quality ------------------------------------------------
-    source_table = _table(
-        [
-            ("Source", False),
-            ("URL", False),
-            ("Bytes", True),
-            ("SHA-256", False),
-            ("Fetched (UTC)", False),
-        ],
-        [
-            [
-                f"<code>{esc(row['source_name'])}</code>",
-                f'<a href="{esc(row["url"])}" class="mono">{esc(row["url"].split("/")[-1])}</a>',
-                _n(row["bytes_downloaded"]),
-                f'<code class="trunc">{esc(row["sha256"][:16])}…</code>',
-                f'<span class="mono">{esc(str(row["fetched_at_utc"])[:19].replace("T", " "))}</span>',
-            ]
-            for row in data.sources
-        ],
-    )
-
     quality_table = _table(
         [
             ("Test", False),
@@ -742,17 +729,22 @@ def render_body(data: DashboardData) -> str:
 <div class="shell">
 
 <header class="masthead">
-  <p class="eyebrow">End-to-end data pipeline &middot; dimensional warehouse</p>
+  <p class="eyebrow">Public health data &middot; {_date(s.get("first_date"))[-4:]}&ndash;{_date(s.get("last_date"))[-4:]}</p>
   <h1>Hospital and intensive care capacity</h1>
   <p class="standfirst">
-    A star-schema warehouse built from three public datasets, with every rate
-    independently recomputed and every model assertion-tested. This page is
-    generated from the warehouse on each run &mdash; no figure below is typed by hand.
+    <b>What this shows.</b> How full hospitals and intensive care units were
+    during COVID-19, in {focus} and the {_n(s.get("locations", 0) - 1)} other places that
+    published daily bed figures. It answers two questions: how hard were
+    {focus}'s hospitals pushed, and how did that compare with everyone else?
+  </p>
+  <p class="standfirst secondary">
+    The figures are population-adjusted, so a small country and a large one can
+    be read on the same scale. Every rate here was recomputed from independent
+    population data rather than taken on trust, and the page is generated
+    straight from the database on each run, so no number below is typed by hand.
   </p>
   <p class="masthead-meta">
-    <span>Warehouse built {esc(built)} UTC</span>
-    <span>{_n(s.get("fact_rows"))} fact rows across {_n(s.get("locations"))} locations</span>
-    <span>Sources: Our World in Data &middot; World Bank &middot; ISO 3166</span>
+    <span>Rebuilt from source data {esc(built)} UTC</span>
   </p>
 </header>
 
@@ -760,80 +752,89 @@ def render_body(data: DashboardData) -> str:
 
 <h2>{focus} in detail</h2>
 <p class="section-lede">
-  Occupancy is a <em>stock</em> &mdash; beds full at a point in time &mdash; so it is
-  averaged within each month, never summed. The two measures sit on separate
-  panels rather than a shared axis: intensive care and all-hospital occupancy
-  differ by more than an order of magnitude, and forcing them onto one plot
-  would invent a relationship the data does not contain.
+  Beds occupied per 100,000 people, averaged over each month. Occupancy is a
+  count of beds full at a single moment, so it is averaged rather than added
+  up: summing it across days would count the same patient once per night.
+  Intensive care and all-hospital occupancy sit on separate panels because they
+  differ by more than a factor of ten, and putting them on one axis would
+  suggest a relationship the data does not contain.
 </p>
 <div class="card">{icu}{ward}</div>
 <div class="card">{peak_table}</div>
 
 <h2>International context</h2>
 <p class="section-lede">
-  Peak intensive care occupancy per 100,000 people &mdash; the highest single day
-  each country recorded. Absolute bed counts mostly measure how big a country
-  is, so the comparable figure is the population-adjusted one.
+  The busiest single day each country recorded for intensive care, adjusted for
+  population. Raw bed counts mostly tell you how big a country is, so this is
+  the figure worth comparing.
 </p>
 <div class="card">{ranking_chart}{ranking_legend}</div>
 
-<h2>Assurance &middot; the rates were checked, not trusted</h2>
+<h2>Checking the numbers</h2>
 <p class="section-lede">
-  The publisher supplies a population-adjusted rate. The warehouse recomputes
-  it independently from World Bank population and keeps the difference as a
-  measure, so a denominator that changes upstream shows up as a failing test
-  rather than as a quietly wrong chart.
+  The publisher already provides a population-adjusted rate. Rather than trust
+  it, this pipeline recalculates the same rate from World Bank population data
+  and keeps the gap between the two as a number it can test. That way a
+  population figure quietly changing upstream shows up as a failing check
+  instead of a wrong chart.
 </p>
 <div class="card">{band_chart}
-  <p class="legend"><span>Share of the {_n(sum(r["rows_in_band"] for r in data.variance_bands))} comparable fact rows falling in each agreement band</span></p>
+  <p class="legend"><span>How closely the two calculations agree, across {_n(sum(r["rows_in_band"] for r in data.variance_bands))} comparable observations</span></p>
 </div>
 <div class="card">{denominator_table}
   <p class="note">
-    <b>What the control caught.</b> Cyprus is not a rounding difference. The
-    publisher's implied denominator is about 896,000 against the World Bank's
-    1.32 million, because the hospital returns cover the government-controlled
-    area while the World Bank series covers the whole island. Poland's smaller
-    gap is the two sources sitting either side of the 2021 census revision.
-    Because the publisher aligns its denominator with the geography its
-    numerator came from, the comparison above uses the publisher's rate and
-    keeps the derived one as the control.
+    <b>What the check caught.</b> Cyprus is not a rounding difference. Working
+    backwards from the published rate, the publisher is dividing by roughly
+    896,000 people, while the World Bank figure is 1.32 million. The reason:
+    the hospital returns cover only the government-controlled area, whereas the
+    World Bank series covers the whole island. The two were never counting the
+    same population. Poland's smaller gap is simpler, with the two sources
+    sitting either side of the 2021 census revision.
+  </p>
+  <p class="note">
+    <b>What changed because of it.</b> The comparison above uses the
+    publisher's rate, because its population figure matches the area the bed
+    counts actually come from. The independently calculated rate stays on as a
+    background check. Both cases are now automated tests, so a new mismatch
+    would be caught rather than published.
   </p>
 </div>
 
-<h2>Warehouse</h2>
+<h2>How this was built</h2>
 <p class="section-lede">
-  Conformed dimensions, two facts at different grains, and four reporting
-  marts. Rebuilt in full on every run, so the build is idempotent.
+  Three public datasets are downloaded, cleaned, and loaded into a small
+  database organised as a star schema: three reference tables describing dates,
+  places and measures, and two tables of measurements that join to them. It is
+  rebuilt from scratch on every run.
 </p>
 <div class="card">{model_table}</div>
-
-<h2>Lineage</h2>
-<p class="section-lede">
-  Every ingestion is checksummed and recorded, so any figure on this page can
-  be traced back to a URL and a byte-for-byte payload.
-</p>
-<div class="card">{source_table}</div>
-
-<h2>Data quality suite</h2>
-<p class="section-lede">
-  {_n(q.get("total"))} declarative assertions covering key uniqueness, the
-  declared fact grain, referential integrity across the star, domain values,
-  business rules and the reconciliation control above.
-</p>
-<div class="card">{quality_table}</div>
+<div class="card">
+  <div class="quality-summary">
+    <span class="pill pass">{_n(q.get("passed"))} of {_n(q.get("total"))} checks passed</span>
+    <span class="quality-note">
+      Covering unique keys, valid joins between tables, permitted values,
+      plausible measurements, and the population cross-check above. A failure
+      stops the run before this page is refreshed.
+    </span>
+  </div>
+  <details>
+    <summary>See all {_n(q.get("total"))} checks</summary>
+    {quality_table}
+  </details>
+</div>
 
 <footer>
   <p>
-    Generated by <code>python -m pipelines.cli all</code>.
-    Pipeline code MIT licensed; source data remains under its publishers'
-    licences (Our World in Data CC BY 4.0, World Bank CC BY 4.0,
-    ISO 3166 country codes CC BY-SA 4.0).
+    <b>Data.</b> COVID-19 hospital and intensive care activity compiled by
+    Our World in Data from national health agencies (CC BY 4.0); population
+    from the World Bank (CC BY 4.0); country and region codes from ISO 3166
+    (CC BY-SA 4.0). Pipeline code is MIT licensed.
   </p>
   <p>
-    COVID-19 hospital and ICU activity as compiled by Our World in Data from
-    national health agencies. Reporting coverage varies by country and the
-    upstream series closed in August 2024; see the coverage grades in the
-    warehouse for per-country completeness.
+    <b>Read with care.</b> Reporting coverage varies by country and the
+    upstream series stopped in August 2024, so this is a historical record
+    rather than a live feed. Cyprus's population-adjusted figures are not
+    comparable with other countries', for the reason set out above.
   </p>
 </footer>
 

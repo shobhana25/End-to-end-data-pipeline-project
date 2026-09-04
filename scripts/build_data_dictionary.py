@@ -126,7 +126,7 @@ def main() -> int:
 
     for layer in LAYER_ORDER:
         for name in sorted(by_layer.get(layer, [])):
-            lines.append(f"- [`{name}`](#{name.replace('_', '-')}) — {layer.lower()}")
+            lines.append(f"- [`{name}`](#{name.replace('_', '-')}) ({layer.lower()})")
     lines.append("")
 
     for layer in LAYER_ORDER:
@@ -137,22 +137,31 @@ def main() -> int:
         for name in names:
             entry = docs[name]
             count = counts.get(name, -1)
+            described = entry.get("columns") or {}
+            # Dimensions and facts carry prose for every column; marts inherit
+            # most of theirs from the star, so they list column and type only
+            # rather than a column of empty cells.
+            with_prose = entry.get("layer") in DESCRIPTIONS_REQUIRED
+
             lines += [
                 f"### {name}",
                 "",
                 " ".join((entry.get("description") or "").split()),
                 "",
-                f"- **Layer** — {entry.get('layer')}",
-                f"- **Grain** — {' '.join((entry.get('grain') or 'not declared').split())}",
-                f"- **Rows** — {count:,}" if count >= 0 else "- **Rows** — n/a",
+                f"- **Layer:** {entry.get('layer')}",
+                f"- **Grain:** {' '.join((entry.get('grain') or 'not declared').split())}",
+                f"- **Rows:** {count:,}" if count >= 0 else "- **Rows:** n/a",
                 "",
-                "| Column | Type | Description |",
-                "| --- | --- | --- |",
             ]
-            described = entry.get("columns") or {}
-            for column, data_type in schema[name]:
-                text = " ".join((described.get(column) or "").split()) or "—"
-                lines.append(f"| `{column}` | `{data_type}` | {text} |")
+            if with_prose:
+                lines += ["| Column | Type | Description |", "| --- | --- | --- |"]
+                for column, data_type in schema[name]:
+                    text = " ".join((described.get(column) or "").split())
+                    lines.append(f"| `{column}` | `{data_type}` | {text} |")
+            else:
+                lines += ["| Column | Type |", "| --- | --- |"]
+                for column, data_type in schema[name]:
+                    lines.append(f"| `{column}` | `{data_type}` |")
             lines.append("")
 
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)

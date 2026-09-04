@@ -56,7 +56,7 @@ _HANDLERS = {
 ```
 
 Handlers run in the order they appear in `_HANDLERS`, which matters when one
-source is the reference list for another — ISO 3166 is staged before population
+source is the reference list for another. ISO 3166 is staged before population
 because it is what identifies the World Bank aggregate rows.
 
 ## 3. Expose it to SQL
@@ -89,7 +89,7 @@ against the real feed rather than a test fixture.
 ## 6. Document it
 
 Add the model to `config/model_docs.yml`. If it is a dimension or a fact, every
-column needs a description — `scripts/build_data_dictionary.py` exits non-zero
+column needs a description. `scripts/build_data_dictionary.py` exits non-zero
 and names any that are missing, so the dictionary cannot drift.
 
 ---
@@ -100,7 +100,7 @@ The Australian Institute of Health and Welfare is the natural source for this
 kind of analysis on Australian data, and `config/sources.yml` carries a
 disabled template entry for it. It is disabled rather than wired up because
 AIHW publishes most collections as **XLSX data-download workbooks attached to a
-specific report release**, not as a stable CSV endpoint — so there is no
+specific report release**, not as a stable CSV endpoint, so there is no
 durable URL to pin that would keep working across releases, and the reference
 run in this repository is built only from sources that any reader can fetch and
 reproduce byte for byte.
@@ -129,8 +129,8 @@ mv ~/Downloads/aihw-data-download.xlsx data/raw/aihw_hospital_activity.xlsx
     enabled: true
 ```
 
-The ingest layer handles `file://` sources through the same code path as HTTP —
-copied atomically, checksummed, and recorded in the manifest — so provenance is
+The ingest layer handles `file://` sources through the same code path as HTTP:
+copied atomically, checksummed, and recorded in the manifest. Provenance is
 identical either way.
 
 **Write the handler.** AIHW workbooks put several tables on one sheet under a
@@ -157,7 +157,7 @@ state or territory, financial year, and a peer-group hierarchy, so it wants:
 
 - rows added to `config/location_overrides.csv` for the eight states and
   territories, with `parent_iso_alpha_3: AUS` and `location_type: Sub-national`
-  — the same mechanism the four UK nations already use;
+  (the same mechanism the four UK nations already use);
 - a financial-year attribute on `dim_date` (`fy_label`, `fy_start_year`), since
   AIHW reports on July–June years;
 - a new fact at AIHW's own grain rather than forced into
