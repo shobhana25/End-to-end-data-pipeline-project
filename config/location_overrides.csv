@@ -1,0 +1,12 @@
+# Locations whose publisher code is not an ISO 3166-1 alpha-3 code.
+# Our World in Data reports the four UK nations separately using its own
+# OWID_* pseudo-codes. Without this mapping they would fall out of the
+# geography hierarchy, so they are classified explicitly here.
+#
+# has_population_data=false means no World Bank population series exists for
+# the entity, so population-derived rates are left NULL rather than guessed.
+source_code,location_name,location_type,parent_iso_alpha_3,region,sub_region,has_population_data
+OWID_ENG,England,Sub-national,GBR,Europe,Northern Europe,false
+OWID_SCT,Scotland,Sub-national,GBR,Europe,Northern Europe,false
+OWID_WLS,Wales,Sub-national,GBR,Europe,Northern Europe,false
+OWID_NIR,Northern Ireland,Sub-national,GBR,Europe,Northern Europe,false

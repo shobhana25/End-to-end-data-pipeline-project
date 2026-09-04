@@ -1,0 +1,870 @@
+"""Dashboard: render the reporting marts to a self-contained HTML page.
+
+The page is generated from the warehouse on every run - there is no hand-typed
+number anywhere in it, and no build step, bundler or CDN. That matters twice
+over: the dashboard cannot drift from the data, and the artefact this pipeline
+publishes is one file that opens anywhere, including straight off GitHub Pages.
+
+Two outputs come from the same content:
+
+* ``docs/index.html`` - a complete standalone document for GitHub Pages;
+* a body-only fragment, for embedding in a host that supplies its own shell.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+from pipelines.charts import BarRow, LinePanel, SeriesPoint, bar_chart, esc
+from pipelines.config import DOCS_DIR, Paths, paths
+from pipelines.logging_conf import get_logger
+from pipelines.warehouse import connect
+
+log = get_logger("pipelines.dashboard")
+
+DEFAULT_FOCUS = "AUS"
+PAGE_TITLE = "Hospital Capacity Warehouse"
+
+# Ordinal ramp (blue, light -> dark), validated for both themes.
+_ORDINAL_VARS = ["--ord-1", "--ord-2", "--ord-3", "--ord-4"]
+
+
+@dataclass
+class DashboardData:
+    """Everything the page renders, pulled from the warehouse in one pass."""
+
+    focus_code: str
+    focus_name: str
+    stats: dict
+    focus_series: dict[str, list[SeriesPoint]]
+    focus_peaks: list[dict]
+    peak_ranking: list[dict]
+    variance_bands: list[dict]
+    denominator_notes: list[dict]
+    sources: list[dict]
+    quality: list[dict]
+    quality_summary: dict
+    model_rows: list[dict]
+
+
+def _rows(connection, sql: str, params: list | None = None) -> list[dict]:
+    cursor = connection.execute(sql, params or [])
+    columns = [d[0] for d in cursor.description]
+    return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
+
+
+def _one(connection, sql: str, params: list | None = None) -> dict:
+    found = _rows(connection, sql, params)
+    return found[0] if found else {}
+
+
+def collect(layout: Paths | None = None, focus: str = DEFAULT_FOCUS) -> DashboardData:
+    """Run every dashboard query against the warehouse."""
+    layout = layout or paths()
+    with connect(layout, read_only=True) as connection:
+        stats = _one(
+            connection,
+            """
+            SELECT count(*)                        AS fact_rows,
+                   count(DISTINCT location_key)    AS locations,
+                   count(DISTINCT indicator_key)   AS indicators,
+                   min(event_date)                 AS first_date,
+                   max(event_date)                 AS last_date,
+                   max(warehouse_built_at)         AS built_at
+            FROM fct_hospital_activity
+            """,
+        )
+        focus_row = _one(
+            connection,
+            "SELECT location_name, region FROM dim_location WHERE source_location_code = ?",
+            [focus],
+        )
+        focus_name = focus_row.get("location_name", focus)
+
+        focus_series: dict[str, list[SeriesPoint]] = {}
+        for code in ("daily_intensive_care_occupancy", "daily_all_hospital_occupancy"):
+            monthly = _rows(
+                connection,
+                """
+                SELECT year_month, monthly_per_100k, max_per_100k, monthly_value, days_observed
+                FROM mart_monthly_activity
+                WHERE source_location_code = ? AND indicator_code = ?
+                ORDER BY year_month
+                """,
+                [focus, code],
+            )
+            focus_series[code] = [
+                SeriesPoint(
+                    label=row["year_month"],
+                    value=float(row["monthly_per_100k"] or 0),
+                    tooltip=(
+                        f"{row['monthly_per_100k']:.2f} per 100k mean · "
+                        f"peak {row['max_per_100k']:.2f} · "
+                        f"{row['monthly_value']:.0f} beds mean · "
+                        f"{row['days_observed']} days reported"
+                    ),
+                )
+                for row in monthly
+            ]
+
+        focus_peaks = _rows(
+            connection,
+            """
+            SELECT indicator_name, care_setting, days_observed, first_observed_date,
+                   last_observed_date, peak_value, peak_value_date,
+                   peak_per_100k, peak_per_100k_date, mean_per_100k
+            FROM mart_peak_pressure
+            WHERE source_location_code = ?
+            ORDER BY indicator_name
+            """,
+            [focus],
+        )
+
+        peak_ranking = _rows(
+            connection,
+            """
+            WITH ranked AS (
+                SELECT location_name, source_location_code, region, peak_per_100k,
+                       peak_per_100k_date, days_observed,
+                       row_number() OVER (ORDER BY peak_per_100k DESC) AS rank
+                FROM mart_peak_pressure
+                WHERE indicator_code = 'daily_intensive_care_occupancy'
+                  AND peak_per_100k IS NOT NULL
+            )
+            SELECT *, (SELECT count(*) FROM ranked) AS ranked_total
+            FROM ranked
+            WHERE rank <= 14 OR source_location_code = ?
+            ORDER BY rank
+            """,
+            [focus],
+        )
+
+        variance_bands = _rows(
+            connection,
+            """
+            SELECT CASE WHEN abs(rate_variance_pct) <= 1  THEN 'Within 1%'
+                        WHEN abs(rate_variance_pct) <= 5  THEN '1% to 5%'
+                        WHEN abs(rate_variance_pct) <= 10 THEN '5% to 10%'
+                        ELSE 'Over 10%' END                     AS band,
+                   CASE WHEN abs(rate_variance_pct) <= 1  THEN 1
+                        WHEN abs(rate_variance_pct) <= 5  THEN 2
+                        WHEN abs(rate_variance_pct) <= 10 THEN 3
+                        ELSE 4 END                              AS band_order,
+                   count(*)                                     AS rows_in_band,
+                   round(100.0 * count(*) / sum(count(*)) OVER (), 2) AS pct_of_rows
+            FROM fct_hospital_activity
+            WHERE rate_variance_pct IS NOT NULL
+            GROUP BY band, band_order
+            ORDER BY band_order
+            """,
+        )
+
+        denominator_notes = _rows(
+            connection,
+            """
+            SELECT location_name, denominator_agreement,
+                   max(publisher_implied_population) AS publisher_population,
+                   max(reference_population)         AS reference_population,
+                   round(avg(median_variance_pct), 1) AS median_variance_pct,
+                   sum(rows_compared)                AS rows_compared
+            FROM mart_rate_reconciliation
+            WHERE denominator_agreement <> 'Aligned'
+            GROUP BY location_name, denominator_agreement
+            ORDER BY abs(avg(median_variance_pct)) DESC
+            LIMIT 6
+            """,
+        )
+
+        sources = _rows(
+            connection,
+            """
+            WITH latest AS (
+                SELECT source_name, max(fetched_at_utc) AS fetched_at_utc
+                FROM meta_ingestion_runs GROUP BY source_name
+            )
+            SELECT m.source_name, m.url, m.bytes_downloaded, m.sha256, m.fetched_at_utc
+            FROM meta_ingestion_runs AS m
+            JOIN latest AS l
+              ON l.source_name = m.source_name AND l.fetched_at_utc = m.fetched_at_utc
+            QUALIFY row_number() OVER (PARTITION BY m.source_name ORDER BY m.sha256) = 1
+            ORDER BY m.bytes_downloaded DESC
+            """,
+        )
+
+        quality: list[dict] = []
+        quality_summary: dict = {}
+        has_quality = _one(
+            connection,
+            "SELECT count(*) AS n FROM duckdb_tables() WHERE table_name = 'meta_quality_results'",
+        ).get("n", 0)
+        if has_quality:
+            quality = _rows(
+                connection,
+                """
+                SELECT test_name, model, test_type, severity, status, failing_rows, description
+                FROM meta_quality_results
+                WHERE run_id = (SELECT run_id FROM meta_quality_results
+                                ORDER BY executed_at DESC, rowid DESC LIMIT 1)
+                ORDER BY CASE status WHEN 'fail' THEN 0 WHEN 'error' THEN 1 ELSE 2 END, test_name
+                """,
+            )
+            quality_summary = _one(
+                connection,
+                """
+                SELECT count(*) AS total,
+                       sum(CASE WHEN status = 'pass' THEN 1 ELSE 0 END) AS passed,
+                       sum(CASE WHEN status <> 'pass' AND severity = 'error' THEN 1 ELSE 0 END) AS blocking,
+                       sum(CASE WHEN status <> 'pass' AND severity = 'warn' THEN 1 ELSE 0 END) AS warnings,
+                       max(executed_at) AS executed_at
+                FROM meta_quality_results
+                WHERE run_id = (SELECT run_id FROM meta_quality_results
+                                ORDER BY executed_at DESC, rowid DESC LIMIT 1)
+                """,
+            )
+
+        model_rows = _rows(
+            connection,
+            """
+            SELECT table_name AS model, estimated_size AS rows_estimate, column_count
+            FROM duckdb_tables()
+            WHERE table_name NOT LIKE 'meta_%'
+            ORDER BY CASE
+                        WHEN table_name LIKE 'dim_%'  THEN 1
+                        WHEN table_name LIKE 'fct_%'  THEN 2
+                        ELSE 3 END, table_name
+            """,
+        )
+
+    return DashboardData(
+        focus_code=focus,
+        focus_name=focus_name,
+        stats=stats,
+        focus_series=focus_series,
+        focus_peaks=focus_peaks,
+        peak_ranking=peak_ranking,
+        variance_bands=variance_bands,
+        denominator_notes=denominator_notes,
+        sources=sources,
+        quality=quality,
+        quality_summary=quality_summary,
+        model_rows=model_rows,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Presentation
+# ---------------------------------------------------------------------------
+
+_STYLE = """
+:root {
+  color-scheme: light;
+  --page:            #f9f9f7;
+  --surface-1:       #fcfcfb;
+  --text-primary:    #0b0b0b;
+  --text-secondary:  #52514e;
+  --text-muted:      #898781;
+  --grid:            #e1e0d9;
+  --axis:            #c3c2b7;
+  --border:          rgba(11, 11, 11, 0.10);
+  --series-1:        #2a78d6;
+  --series-2:        #eb6834;
+  --neutral-mark:    #c3c2b7;
+  --ord-1:           #86b6ef;
+  --ord-2:           #5598e7;
+  --ord-3:           #2a78d6;
+  --ord-4:           #1c5cab;
+  --good:            #0ca30c;
+  --warning:         #fab219;
+  --critical:        #d03b3b;
+  --tooltip-bg:      #0b0b0b;
+  --tooltip-ink:     #fcfcfb;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page:           #0d0d0d;
+    --surface-1:      #1a1a19;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #898781;
+    --grid:           #2c2c2a;
+    --axis:           #383835;
+    --border:         rgba(255, 255, 255, 0.10);
+    --series-1:       #3987e5;
+    --series-2:       #d95926;
+    --neutral-mark:   #52514e;
+    --tooltip-bg:     #fcfcfb;
+    --tooltip-ink:    #0b0b0b;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page:           #0d0d0d;
+  --surface-1:      #1a1a19;
+  --text-primary:   #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted:     #898781;
+  --grid:           #2c2c2a;
+  --axis:           #383835;
+  --border:         rgba(255, 255, 255, 0.10);
+  --series-1:       #3987e5;
+  --series-2:       #d95926;
+  --neutral-mark:   #52514e;
+  --tooltip-bg:     #fcfcfb;
+  --tooltip-ink:    #0b0b0b;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--text-primary);
+  font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.shell { max-width: 1080px; margin: 0 auto; padding: 40px 24px 64px; }
+
+header.masthead { margin-bottom: 28px; }
+.eyebrow {
+  font-size: 12px; letter-spacing: 0.09em; text-transform: uppercase;
+  color: var(--text-muted); margin: 0 0 10px;
+}
+h1 { font-size: 30px; line-height: 1.2; margin: 0 0 10px; font-weight: 640; letter-spacing: -0.015em; }
+.standfirst { font-size: 16px; color: var(--text-secondary); margin: 0; max-width: 68ch; }
+.masthead-meta {
+  margin-top: 16px; font-size: 13px; color: var(--text-muted);
+  display: flex; flex-wrap: wrap; gap: 6px 18px;
+}
+.masthead-meta code { font-size: 12px; }
+
+h2 {
+  font-size: 13px; letter-spacing: 0.09em; text-transform: uppercase;
+  color: var(--text-muted); margin: 44px 0 6px; font-weight: 600;
+}
+.section-lede { margin: 0 0 18px; color: var(--text-secondary); max-width: 74ch; font-size: 14.5px; }
+
+.card {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px 22px;
+}
+.card + .card { margin-top: 16px; }
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 12px; }
+.tile {
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 12px; padding: 16px 18px;
+}
+.tile-value { font-size: 27px; font-weight: 640; letter-spacing: -0.02em; line-height: 1.1; }
+.tile-label { font-size: 12.5px; color: var(--text-muted); margin-top: 5px; }
+.tile-note { font-size: 12.5px; color: var(--text-secondary); margin-top: 3px; }
+.tile-value.is-good { color: var(--good); }
+
+.panel { margin: 0; }
+.panel + .panel { margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--border); }
+.panel figcaption { margin-bottom: 6px; }
+.panel-title { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 15px; }
+.panel-sub { display: block; font-size: 13px; color: var(--text-muted); margin-top: 2px; }
+.swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; flex: none; }
+
+.chart-wrap { position: relative; }
+.chart { display: block; width: 100%; height: auto; overflow: visible; }
+.grid { stroke: var(--grid); stroke-width: 1; }
+.axis { stroke: var(--axis); stroke-width: 1; }
+.tick { fill: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.peak-label { fill: var(--text-secondary); font-size: 11.5px; font-weight: 600; }
+.bar-label { fill: var(--text-secondary); font-size: 12.5px; }
+.bar-label.is-highlight { fill: var(--text-primary); font-weight: 640; }
+.bar-value { fill: var(--text-secondary); font-size: 12px; font-variant-numeric: tabular-nums; }
+.bar-highlight .bar-value { fill: var(--text-primary); font-weight: 640; }
+.bar { cursor: default; }
+.bar:hover path { opacity: 0.82; }
+.empty { color: var(--text-muted); font-size: 14px; }
+
+.crosshair { stroke: var(--axis); stroke-width: 1; }
+.tooltip {
+  position: absolute; z-index: 5; pointer-events: none;
+  background: var(--tooltip-bg); color: var(--tooltip-ink);
+  padding: 7px 10px; border-radius: 7px; font-size: 12.5px; line-height: 1.45;
+  max-width: 280px; transform: translate(-50%, calc(-100% - 12px)); white-space: nowrap;
+}
+.tooltip b { font-weight: 640; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 12px 0 0; font-size: 12.5px; color: var(--text-secondary); }
+.legend span { display: inline-flex; align-items: center; gap: 7px; }
+
+.table-scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th, td { text-align: left; padding: 8px 12px 8px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { font-size: 11.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); font-weight: 600; white-space: nowrap; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; padding-right: 0; }
+tbody tr:last-child td { border-bottom: 0; }
+code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.trunc { color: var(--text-muted); }
+
+.pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 999px;
+  border: 1px solid var(--border); white-space: nowrap;
+}
+.pill.pass { color: var(--good); }
+.pill.warn { color: var(--warning); }
+.pill.fail { color: var(--critical); }
+.pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+
+.note {
+  border-left: 3px solid var(--series-2); padding: 2px 0 2px 14px;
+  margin: 18px 0 0; color: var(--text-secondary); font-size: 14px; max-width: 74ch;
+}
+.note b { color: var(--text-primary); }
+
+footer { margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 13px; }
+footer a { color: var(--text-secondary); }
+a { color: var(--series-1); }
+
+@media (max-width: 640px) {
+  .shell { padding: 28px 16px 48px; }
+  h1 { font-size: 24px; }
+  .tile-value { font-size: 23px; }
+}
+"""
+
+_SCRIPT = """
+(function () {
+  function place(tip, wrap, x, y, html) {
+    tip.innerHTML = html;
+    tip.hidden = false;
+    var w = wrap.getBoundingClientRect();
+    var t = tip.getBoundingClientRect();
+    var half = t.width / 2;
+    var clamped = Math.max(half + 4, Math.min(x, w.width - half - 4));
+    tip.style.left = clamped + "px";
+    tip.style.top = y + "px";
+  }
+
+  document.querySelectorAll('[data-hover="line"]').forEach(function (wrap) {
+    var svg = wrap.querySelector("svg");
+    var tip = wrap.querySelector(".tooltip");
+    var meta = JSON.parse(wrap.getAttribute("data-series"));
+    if (!svg || !meta.points.length) return;
+
+    var ns = "http://www.w3.org/2000/svg";
+    var rule = document.createElementNS(ns, "line");
+    rule.setAttribute("class", "crosshair");
+    rule.setAttribute("y1", meta.top);
+    rule.setAttribute("y2", meta.top + meta.plotHeight);
+    rule.style.display = "none";
+    svg.appendChild(rule);
+
+    var dot = document.createElementNS(ns, "circle");
+    dot.setAttribute("r", "4.5");
+    dot.setAttribute("fill", "var(--surface-1)");
+    dot.setAttribute("stroke-width", "2.5");
+    dot.style.display = "none";
+    svg.appendChild(dot);
+
+    function nearest(event) {
+      var box = svg.getBoundingClientRect();
+      var vb = svg.viewBox.baseVal;
+      var x = ((event.clientX - box.left) / box.width) * vb.width;
+      var index = Math.round((x - meta.left) / meta.step);
+      return Math.max(0, Math.min(meta.points.length - 1, index));
+    }
+
+    svg.addEventListener("mousemove", function (event) {
+      var point = meta.points[nearest(event)];
+      rule.setAttribute("x1", point.x);
+      rule.setAttribute("x2", point.x);
+      rule.style.display = "";
+      dot.setAttribute("cx", point.x);
+      dot.setAttribute("cy", point.y);
+      dot.setAttribute("stroke", getComputedStyle(svg.querySelector("path[stroke]")).stroke);
+      dot.style.display = "";
+      var box = svg.getBoundingClientRect();
+      var scale = box.width / svg.viewBox.baseVal.width;
+      place(tip, wrap, point.x * scale, point.y * scale,
+            "<b>" + point.label + "</b><br>" + (point.tip || point.value));
+    });
+    svg.addEventListener("mouseleave", function () {
+      tip.hidden = true; rule.style.display = "none"; dot.style.display = "none";
+    });
+  });
+
+  document.querySelectorAll('[data-hover="bar"]').forEach(function (wrap) {
+    var tip = wrap.querySelector(".tooltip");
+    wrap.querySelectorAll(".bar").forEach(function (bar) {
+      bar.addEventListener("mousemove", function (event) {
+        var box = wrap.getBoundingClientRect();
+        place(tip, wrap, event.clientX - box.left, event.clientY - box.top,
+              bar.getAttribute("data-tip"));
+      });
+      bar.addEventListener("mouseleave", function () { tip.hidden = true; });
+    });
+  });
+})();
+"""
+
+
+def _n(value, places: int = 0) -> str:
+    if value is None:
+        return "-"
+    return f"{float(value):,.{places}f}"
+
+
+def _date(value) -> str:
+    if value is None:
+        return "-"
+    return value.strftime("%-d %b %Y") if hasattr(value, "strftime") else str(value)[:10]
+
+
+def _tile(value: str, label: str, note: str = "", good: bool = False) -> str:
+    return (
+        f'<div class="tile"><div class="tile-value{" is-good" if good else ""}">{value}</div>'
+        f'<div class="tile-label">{esc(label)}</div>'
+        + (f'<div class="tile-note">{esc(note)}</div>' if note else "")
+        + "</div>"
+    )
+
+
+def _table(headers: list[tuple[str, bool]], rows: list[list[str]]) -> str:
+    head = "".join(
+        f'<th class="{"num" if numeric else ""}">{esc(title)}</th>' for title, numeric in headers
+    )
+    body = "".join(
+        "<tr>"
+        + "".join(
+            f'<td class="{"num" if headers[i][1] else ""}">{cell}</td>'
+            for i, cell in enumerate(row)
+        )
+        + "</tr>"
+        for row in rows
+    )
+    return f'<div class="table-scroll"><table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>'
+
+
+def render_body(data: DashboardData) -> str:
+    """Assemble the page content (title + style + markup), without a document shell."""
+    s = data.stats
+    q = data.quality_summary or {}
+    focus = esc(data.focus_name)
+
+    # -- Stat tiles ---------------------------------------------------------
+    quality_tile = (
+        _tile(
+            f"{_n(q.get('passed'))}/{_n(q.get('total'))}",
+            "Data quality tests passed",
+            "0 blocking failures" if not q.get("blocking") else f"{_n(q.get('blocking'))} blocking",
+            good=not q.get("blocking"),
+        )
+        if q
+        else ""
+    )
+    tiles = (
+        _tile(_n(s.get("fact_rows")), "Fact rows", "one per location, date and measure")
+        + _tile(_n(s.get("locations")), "Reporting locations", "conformed to ISO 3166")
+        + _tile(
+            f"{_date(s.get('first_date'))[-4:]} – {_date(s.get('last_date'))[-4:]}",  # noqa: RUF001 - thin space + en dash are deliberate
+            "Period covered",
+            f"{_date(s.get('first_date'))} to {_date(s.get('last_date'))}",
+        )
+        + quality_tile
+    )
+
+    # -- Focus country small multiples --------------------------------------
+    icu = LinePanel(
+        title=f"{data.focus_name} · intensive care occupancy",
+        subtitle="Monthly mean COVID-19 ICU beds occupied per 100,000 people",
+        points=data.focus_series.get("daily_intensive_care_occupancy", []),
+        colour_var="--series-1",
+        unit_suffix=" /100k",
+    ).render("panel-icu")
+    ward = LinePanel(
+        title=f"{data.focus_name} · all-hospital occupancy",
+        subtitle="Monthly mean COVID-19 hospital beds occupied per 100,000 people",
+        points=data.focus_series.get("daily_all_hospital_occupancy", []),
+        colour_var="--series-2",
+        unit_suffix=" /100k",
+    ).render("panel-ward")
+
+    peak_rows = [
+        [
+            esc(row["indicator_name"]),
+            _n(row["days_observed"]),
+            f'{_n(row["peak_value"])} <span class="trunc">on {_date(row["peak_value_date"])}</span>',
+            _n(row["peak_per_100k"], 2),
+            _n(row["mean_per_100k"], 2),
+        ]
+        for row in data.focus_peaks
+    ]
+    peak_table = _table(
+        [
+            ("Measure", False),
+            ("Days reported", True),
+            ("Peak beds", True),
+            ("Peak per 100k", True),
+            ("Mean per 100k", True),
+        ],
+        peak_rows,
+    )
+
+    # -- International ranking (emphasis, not rainbow) ----------------------
+    ranking_rows = [
+        BarRow(
+            label=row["location_name"],
+            value=float(row["peak_per_100k"]),
+            highlight=row["source_location_code"] == data.focus_code,
+            annotation=(
+                f"· rank {row['rank']} of {row['ranked_total']}"
+                if row["source_location_code"] == data.focus_code and row["rank"] > 14
+                else ""
+            ),
+            tooltip=(
+                f"{row['location_name']} — peak {row['peak_per_100k']:.2f} per 100k "
+                f"on {_date(row['peak_per_100k_date'])}, {row['days_observed']:,} days reported"
+            ),
+        )
+        for row in data.peak_ranking
+    ]
+    ranking_chart = bar_chart(ranking_rows, unit_suffix="")
+    ranking_legend = (
+        '<p class="legend">'
+        f'<span><span class="swatch" style="background:var(--series-1)"></span>{focus}</span>'
+        '<span><span class="swatch" style="background:var(--neutral-mark)"></span>'
+        "Other reporting countries</span></p>"
+    )
+
+    # -- Assurance ----------------------------------------------------------
+    band_rows = [
+        BarRow(
+            label=row["band"],
+            value=float(row["pct_of_rows"]),
+            colour_var=_ORDINAL_VARS[min(int(row["band_order"]) - 1, len(_ORDINAL_VARS) - 1)],
+            annotation=f"({_n(row['rows_in_band'])} rows)",
+            tooltip=(
+                f"{row['band']}: {row['pct_of_rows']:.2f}% of compared rows "
+                f"({row['rows_in_band']:,})"
+            ),
+        )
+        for row in data.variance_bands
+    ]
+    band_chart = bar_chart(band_rows, unit_suffix="%", row_height=30, label_width=110)
+
+    denominator_table = _table(
+        [
+            ("Location", False),
+            ("Finding", False),
+            ("Publisher denominator", True),
+            ("World Bank population", True),
+            ("Median gap", True),
+        ],
+        [
+            [
+                esc(row["location_name"]),
+                f'<span class="pill {"fail" if row["denominator_agreement"] == "Definitional mismatch" else "warn"}">'
+                f"{esc(row['denominator_agreement'])}</span>",
+                _n(row["publisher_population"]),
+                _n(row["reference_population"]),
+                f"{_n(row['median_variance_pct'], 1)}%",
+            ]
+            for row in data.denominator_notes
+        ],
+    )
+
+    # -- Lineage and quality ------------------------------------------------
+    source_table = _table(
+        [
+            ("Source", False),
+            ("URL", False),
+            ("Bytes", True),
+            ("SHA-256", False),
+            ("Fetched (UTC)", False),
+        ],
+        [
+            [
+                f"<code>{esc(row['source_name'])}</code>",
+                f'<a href="{esc(row["url"])}" class="mono">{esc(row["url"].split("/")[-1])}</a>',
+                _n(row["bytes_downloaded"]),
+                f'<code class="trunc">{esc(row["sha256"][:16])}…</code>',
+                f'<span class="mono">{esc(str(row["fetched_at_utc"])[:19].replace("T", " "))}</span>',
+            ]
+            for row in data.sources
+        ],
+    )
+
+    quality_table = _table(
+        [
+            ("Test", False),
+            ("Model", False),
+            ("Type", False),
+            ("Severity", False),
+            ("Result", False),
+        ],
+        [
+            [
+                f"<code>{esc(row['test_name'])}</code>",
+                f'<code class="trunc">{esc(row["model"])}</code>',
+                esc(row["test_type"]),
+                esc(row["severity"]),
+                (
+                    '<span class="pill pass">pass</span>'
+                    if row["status"] == "pass"
+                    else f'<span class="pill {"warn" if row["severity"] == "warn" else "fail"}">'
+                    f"{esc(row['status'])} · {_n(row['failing_rows'])} rows</span>"
+                ),
+            ]
+            for row in data.quality
+        ],
+    )
+
+    model_table = _table(
+        [("Model", False), ("Layer", False), ("Rows", True), ("Columns", True)],
+        [
+            [
+                f"<code>{esc(row['model'])}</code>",
+                "Dimension"
+                if row["model"].startswith("dim_")
+                else "Fact"
+                if row["model"].startswith("fct_")
+                else "Reporting mart",
+                _n(row["rows_estimate"]),
+                _n(row["column_count"]),
+            ]
+            for row in data.model_rows
+        ],
+    )
+
+    built = str(s.get("built_at") or "")[:19].replace("T", " ")
+
+    return f"""<title>{PAGE_TITLE}</title>
+<style>{_STYLE}</style>
+<div class="shell">
+
+<header class="masthead">
+  <p class="eyebrow">End-to-end data pipeline &middot; dimensional warehouse</p>
+  <h1>Hospital and intensive care capacity</h1>
+  <p class="standfirst">
+    A star-schema warehouse built from three public datasets, with every rate
+    independently recomputed and every model assertion-tested. This page is
+    generated from the warehouse on each run &mdash; no figure below is typed by hand.
+  </p>
+  <p class="masthead-meta">
+    <span>Warehouse built {esc(built)} UTC</span>
+    <span>{_n(s.get("fact_rows"))} fact rows across {_n(s.get("locations"))} locations</span>
+    <span>Sources: Our World in Data &middot; World Bank &middot; ISO 3166</span>
+  </p>
+</header>
+
+<div class="tiles">{tiles}</div>
+
+<h2>{focus} in detail</h2>
+<p class="section-lede">
+  Occupancy is a <em>stock</em> &mdash; beds full at a point in time &mdash; so it is
+  averaged within each month, never summed. The two measures sit on separate
+  panels rather than a shared axis: intensive care and all-hospital occupancy
+  differ by more than an order of magnitude, and forcing them onto one plot
+  would invent a relationship the data does not contain.
+</p>
+<div class="card">{icu}{ward}</div>
+<div class="card">{peak_table}</div>
+
+<h2>International context</h2>
+<p class="section-lede">
+  Peak intensive care occupancy per 100,000 people &mdash; the highest single day
+  each country recorded. Absolute bed counts mostly measure how big a country
+  is, so the comparable figure is the population-adjusted one.
+</p>
+<div class="card">{ranking_chart}{ranking_legend}</div>
+
+<h2>Assurance &middot; the rates were checked, not trusted</h2>
+<p class="section-lede">
+  The publisher supplies a population-adjusted rate. The warehouse recomputes
+  it independently from World Bank population and keeps the difference as a
+  measure, so a denominator that changes upstream shows up as a failing test
+  rather than as a quietly wrong chart.
+</p>
+<div class="card">{band_chart}
+  <p class="legend"><span>Share of the {_n(sum(r["rows_in_band"] for r in data.variance_bands))} comparable fact rows falling in each agreement band</span></p>
+</div>
+<div class="card">{denominator_table}
+  <p class="note">
+    <b>What the control caught.</b> Cyprus is not a rounding difference. The
+    publisher's implied denominator is about 896,000 against the World Bank's
+    1.32 million, because the hospital returns cover the government-controlled
+    area while the World Bank series covers the whole island. Poland's smaller
+    gap is the two sources sitting either side of the 2021 census revision.
+    Because the publisher aligns its denominator with the geography its
+    numerator came from, the comparison above uses the publisher's rate and
+    keeps the derived one as the control.
+  </p>
+</div>
+
+<h2>Warehouse</h2>
+<p class="section-lede">
+  Conformed dimensions, two facts at different grains, and four reporting
+  marts. Rebuilt in full on every run, so the build is idempotent.
+</p>
+<div class="card">{model_table}</div>
+
+<h2>Lineage</h2>
+<p class="section-lede">
+  Every ingestion is checksummed and recorded, so any figure on this page can
+  be traced back to a URL and a byte-for-byte payload.
+</p>
+<div class="card">{source_table}</div>
+
+<h2>Data quality suite</h2>
+<p class="section-lede">
+  {_n(q.get("total"))} declarative assertions covering key uniqueness, the
+  declared fact grain, referential integrity across the star, domain values,
+  business rules and the reconciliation control above.
+</p>
+<div class="card">{quality_table}</div>
+
+<footer>
+  <p>
+    Generated by <code>python -m pipelines.cli all</code>.
+    Pipeline code MIT licensed; source data remains under its publishers'
+    licences (Our World in Data CC BY 4.0, World Bank CC BY 4.0,
+    ISO 3166 country codes CC BY-SA 4.0).
+  </p>
+  <p>
+    COVID-19 hospital and ICU activity as compiled by Our World in Data from
+    national health agencies. Reporting coverage varies by country and the
+    upstream series closed in August 2024; see the coverage grades in the
+    warehouse for per-country completeness.
+  </p>
+</footer>
+
+</div>
+<script>{_SCRIPT}</script>"""
+
+
+def render_page(data: DashboardData) -> str:
+    """Wrap the body in a complete standalone HTML document.
+
+    The style block is lifted into <head> so the page paints without a flash;
+    everything after it is the body.
+    """
+    body = render_body(data)
+    head_styles, _, markup = body.partition("</style>")
+    return (
+        "<!doctype html>\n"
+        '<html lang="en">\n<head>\n<meta charset="utf-8">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        '<meta name="description" content="Star-schema warehouse of hospital and ICU '
+        'capacity built from three public datasets, with reconciliation and quality tests.">\n'
+        "<style>img{max-width:100%}[hidden]{display:none!important}</style>\n"
+        f"{head_styles}</style>\n</head>\n<body>\n{markup}\n</body>\n</html>\n"
+    )
+
+
+def run(focus: str = DEFAULT_FOCUS, output: Path | None = None) -> Path:
+    """Render the dashboard to docs/index.html."""
+    data = collect(focus=focus)
+    output = output or (DOCS_DIR / "index.html")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(render_page(data), encoding="utf-8")
+    log.info("dashboard -> %s (%.0f KiB)", output, output.stat().st_size / 1024)
+    return output

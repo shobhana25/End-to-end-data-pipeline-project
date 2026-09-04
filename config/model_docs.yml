@@ -1,0 +1,189 @@
+# ---------------------------------------------------------------------------
+# Model documentation
+# ---------------------------------------------------------------------------
+# Prose descriptions for the warehouse. scripts/build_data_dictionary.py joins
+# this file to the live DuckDB schema and writes docs/data_dictionary.md, so
+# the published dictionary always matches the warehouse that was actually
+# built. The script FAILS if a dimension or fact column has no description
+# here - documentation drift is a build error, not a chore.
+
+models:
+
+  dim_date:
+    layer: Dimension
+    grain: One row per calendar day, plus one Unknown member.
+    description: >
+      A dense, gapless calendar generated from the observed fact range and
+      padded to whole years. Gapless is the point: a missing day silently
+      drops facts from every time-series join, so it is asserted rather than
+      assumed.
+    columns:
+      date_key: "Primary key. YYYYMMDD as an integer - readable in a result, sorts chronologically, survives a reload. -1 is the Unknown member."
+      full_date: "The calendar date. NULL only on the Unknown member."
+      calendar_year: "Four-digit calendar year."
+      calendar_quarter: "Calendar quarter, 1-4."
+      quarter_label: "Quarter as a display label, e.g. 2022-Q1."
+      calendar_month: "Calendar month, 1-12."
+      month_name: "Full month name, e.g. January."
+      year_month: "Month as YYYY-MM - the join key the monthly mart groups on."
+      month_start_date: "First day of the month, for time-axis plotting."
+      iso_year: "ISO-8601 week-numbering year, which can differ from calendar_year at a year boundary."
+      iso_week: "ISO-8601 week number, 1-53."
+      iso_week_label: "ISO year and week as a display label, e.g. 2022-W03."
+      week_start_date: "Monday of the ISO week."
+      day_of_month: "Day of the month, 1-31."
+      iso_day_of_week: "ISO day of week, 1 = Monday through 7 = Sunday."
+      day_name: "Full day name, e.g. Tuesday."
+      is_weekend: "True on Saturday and Sunday. Reporting often thins at weekends, so this is worth having when reading gaps."
+      is_month_end: "True on the last calendar day of the month."
+
+  dim_location:
+    layer: Dimension
+    grain: One row per reporting location, plus one Unknown member.
+    description: >
+      The conformed geography dimension, assembled from ISO 3166-1 plus a
+      hand-maintained override file for the publisher codes that are not ISO.
+      It deliberately covers the full ISO country list rather than only the
+      ~50 locations that report activity: a conformed dimension describes the
+      domain, the facts describe what was measured.
+    columns:
+      location_key: "Surrogate primary key, assigned by row_number() over the natural key. -1 is the Unknown member."
+      source_location_code: "Natural key - the publisher's own code. An ISO alpha-3 for countries, an OWID_* pseudo-code for the four UK nations."
+      location_name: "Display name of the location."
+      iso_alpha_2: "ISO 3166-1 alpha-2 code. NULL for non-ISO locations."
+      iso_alpha_3: "ISO 3166-1 alpha-3 code. NULL for non-ISO locations."
+      location_type: "Country or Sub-national. Sub-national rows exist because Our World in Data reports England, Scotland, Wales and Northern Ireland separately."
+      parent_iso_alpha_3: "For a sub-national location, the country it belongs to (GBR for the UK nations). Equals iso_alpha_3 for countries."
+      region: "UN M49 region, e.g. Europe. Never NULL for a location that reports activity - that is asserted."
+      sub_region: "UN M49 sub-region, e.g. Northern Europe."
+      intermediate_region: "UN M49 intermediate region where one exists, otherwise 'Not applicable'."
+      has_population_data: "True when a World Bank population series exists. False means population-derived rates are left NULL rather than guessed."
+      reports_hospital_activity: "True when this location appears in the fact table. Separates the domain from what was actually measured."
+      classification_source: "Where the classification came from - 'ISO 3166-1' or 'config/location_overrides.csv'. Makes the hand-maintained rows auditable."
+
+  dim_indicator:
+    layer: Dimension
+    grain: One row per real-world measure, plus one Unknown member. The unit variant is pivoted onto the fact, not carried here.
+    description: >
+      Parsed out of the publisher's free-text indicator labels by
+      pipelines/stage.py::parse_indicator. The attribute that matters most is
+      is_additive_over_time, which records whether a measure may be summed
+      across dates.
+    columns:
+      indicator_key: "Surrogate primary key. -1 is the Unknown member."
+      indicator_code: "Stable snake_case natural key, e.g. daily_intensive_care_occupancy."
+      indicator_name: "Human-readable measure name."
+      care_setting: "Intensive care or All hospital."
+      metric_type: "Occupancy or New admissions."
+      reporting_frequency: "Daily or Weekly, as published."
+      measure_semantics: "Stock (point-in-time) or Flow (period total)."
+      is_additive_over_time: "True when the measure may be summed across dates. Occupancy is a stock, so summing it counts the same patient once per night; admissions are a flow and may be summed."
+      default_time_aggregation: "The aggregate function that matches the semantics - 'sum' for flows, 'avg' for stocks."
+      source_count_label: "The publisher's original label for the absolute-count variant, kept for traceability."
+      source_rate_label: "The publisher's original label for the per-million variant."
+
+  fct_hospital_activity:
+    layer: Fact
+    grain: One row per location, date and indicator. Enforced by fct_activity_grain_is_unique.
+    description: >
+      The centre of the star: daily and weekly hospital and ICU activity, with
+      the publisher's rate, an independently derived rate, and the difference
+      between them kept as a measure.
+    columns:
+      date_key: "Foreign key to dim_date."
+      location_key: "Foreign key to dim_location."
+      indicator_key: "Foreign key to dim_indicator."
+      event_date: "The observation date, carried on the fact so it can be filtered without a join."
+      reported_value: "The publisher's absolute count - beds occupied, or admissions in the period."
+      reported_per_million: "The publisher's own population-adjusted rate."
+      reported_per_100k: "The publisher's rate rescaled to per 100,000. THE measure to compare across locations: the publisher's denominator matches the geography its numerator covers."
+      population: "This location's population in the calendar year of the observation, carried onto the fact so every rate below is reproducible from the row alone. NULL where no series exists."
+      derived_per_million: "Rate recomputed here from reported_value and population. An independent control, not the headline number."
+      derived_per_100k: "The same control at the per-100,000 scale."
+      rate_variance_pct: "Signed percentage difference between the derived and the published rate. The reconciliation measure: near zero almost everywhere, ~-7% for Poland (census vintage), ~-32% for Cyprus (the two sources cover different populations)."
+      is_statistical_outlier: "Flagged by a median/MAD modified z-score within the series. A review flag, never a filter - epidemic curves are legitimately spiky."
+      is_population_unknown: "True where no population was available, so the derived rates are NULL by design rather than by accident."
+      warehouse_built_at: "When this row's model was last built. Cheap lineage on every row."
+
+  fct_population_annual:
+    layer: Fact
+    grain: One row per location and calendar year.
+    description: >
+      A periodic snapshot fact. Population is modelled as a fact rather than an
+      attribute on dim_location because it is a measured quantity that changes
+      every year - putting it on the dimension would either freeze it or force
+      a slowly-changing dimension for what is simply a yearly measurement.
+      World Bank aggregates ("World", "OECD members", the income groups) are
+      excluded upstream so nothing here can double-count a population.
+    columns:
+      location_key: "Foreign key to dim_location."
+      calendar_year: "The year the estimate refers to."
+      population: "Mid-year population estimate. Semi-additive: additive across locations, never across years."
+      population_millions: "population / 1e6, for readability in ad-hoc queries."
+      source_location_code: "The ISO alpha-3 the row was joined on, kept for traceability."
+
+  mart_monthly_activity:
+    layer: Reporting mart
+    grain: One row per location, indicator and month.
+    description: >
+      Monthly rollup, aggregated according to each measure's own semantics:
+      stocks get avg and max, flows get sum. monthly_value and monthly_per_100k
+      carry whichever aggregation the indicator declares, so a chart can plot
+      any measure without knowing the difference.
+
+  mart_peak_pressure:
+    layer: Reporting mart
+    grain: One row per location and indicator.
+    description: >
+      The single worst day each location recorded, on both the absolute and the
+      population-adjusted scale, with the date it happened.
+
+  mart_location_coverage:
+    layer: Reporting mart
+    grain: One row per location and indicator.
+    description: >
+      How complete each series is. Reporting gaps are the failure mode that
+      quietly corrupts cross-country comparison, so completeness is measured
+      inside each location's own reporting span and graded against the
+      indicator's own cadence (a weekly series legitimately reports one day in
+      seven).
+
+  mart_rate_reconciliation:
+    layer: Reporting mart
+    grain: One row per location and indicator.
+    description: >
+      The assurance mart. Compares the publisher's rate against the derived one
+      and grades the result, back-solving the denominator the publisher must
+      have used so a mismatch is diagnosable rather than merely visible.
+
+  stg_hospital_activity:
+    layer: Staging view
+    grain: One row per location, date and indicator including the unit variant - the publisher's own grain.
+    description: >
+      Typed view over the staged Parquet. Guarantees types and excludes rows
+      that are structurally impossible; aggregates nothing.
+
+  stg_location:
+    layer: Staging view
+    grain: One row per source_location_code.
+    description: The conformed geography reference list - ISO 3166-1 plus the non-ISO overrides.
+
+  stg_population:
+    layer: Staging view
+    grain: One row per country and calendar year.
+    description: Annual population with the World Bank aggregate rows excluded.
+
+  meta_ingestion_runs:
+    layer: Metadata
+    grain: One row per source per ingestion run.
+    description: >
+      Ingestion provenance - URL, SHA-256 checksum, byte count, timestamp and
+      run id. This is what makes any figure in the warehouse traceable back to
+      a byte-for-byte payload.
+
+  meta_quality_results:
+    layer: Metadata
+    grain: One row per assertion per quality run.
+    description: >
+      Every quality result ever recorded, so the quality history is queryable
+      alongside the data it describes.

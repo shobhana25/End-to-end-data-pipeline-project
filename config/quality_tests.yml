@@ -1,0 +1,275 @@
+# ---------------------------------------------------------------------------
+# Data quality suite
+# ---------------------------------------------------------------------------
+# Each test compiles to SQL that selects the *failing* rows; a test passes when
+# nothing comes back. Results are written to meta_quality_results in the
+# warehouse on every run, so quality history is queryable next to the data.
+#
+# severity: error  -> fails the pipeline, non-zero exit
+# severity: warn   -> reported, does not fail the build
+#
+# requires_full_volume: true marks a test whose threshold is calibrated to the
+# production feeds (a row-count floor, a last-known date, a tolerance tuned to
+# the real country mix). The offline fixture run skips those and exercises
+# everything else.
+#
+# See pipelines/quality.py for the supported test types.
+# ---------------------------------------------------------------------------
+
+defaults:
+  severity: error
+
+tests:
+
+  # -- Dimension keys ------------------------------------------------------
+  - name: dim_date_key_is_unique
+    description: The date dimension's primary key must be unique.
+    model: dim_date
+    type: unique
+    column: date_key
+
+  - name: dim_date_full_date_not_null
+    description: >
+      Every date row except the Unknown member (-1) must carry a real date.
+    model: dim_date
+    type: not_null
+    column: full_date
+    where: date_key <> -1
+
+  - name: dim_location_key_is_unique
+    description: The location dimension's surrogate key must be unique.
+    model: dim_location
+    type: unique
+    column: location_key
+
+  - name: dim_location_natural_key_is_unique
+    description: >
+      The publisher's location code must also be unique - a duplicate here
+      would silently fan out every fact row for that location.
+    model: dim_location
+    type: unique
+    column: source_location_code
+
+  - name: dim_indicator_key_is_unique
+    description: The indicator dimension's surrogate key must be unique.
+    model: dim_indicator
+    type: unique
+    column: indicator_key
+
+  - name: dim_indicator_code_is_unique
+    description: One row per real-world measure, units pivoted out.
+    model: dim_indicator
+    type: unique
+    column: indicator_code
+
+  # -- Fact grain ----------------------------------------------------------
+  - name: fct_activity_grain_is_unique
+    description: >
+      The declared grain of the fact table - one row per location, date and
+      indicator. An unenforced grain is only a hope, so it is asserted here.
+    model: fct_hospital_activity
+    type: unique_combination
+    columns: [date_key, location_key, indicator_key]
+
+  - name: fct_population_grain_is_unique
+    description: One population row per location and calendar year.
+    model: fct_population_annual
+    type: unique_combination
+    columns: [location_key, calendar_year]
+
+  # -- Referential integrity across the star -------------------------------
+  - name: fct_activity_date_key_resolves
+    description: Every fact row joins to a real date dimension row.
+    model: fct_hospital_activity
+    type: relationships
+    column: date_key
+    to_model: dim_date
+    to_column: date_key
+
+  - name: fct_activity_location_key_resolves
+    description: Every fact row joins to a real location dimension row.
+    model: fct_hospital_activity
+    type: relationships
+    column: location_key
+    to_model: dim_location
+    to_column: location_key
+
+  - name: fct_activity_indicator_key_resolves
+    description: Every fact row joins to a real indicator dimension row.
+    model: fct_hospital_activity
+    type: relationships
+    column: indicator_key
+    to_model: dim_indicator
+    to_column: indicator_key
+
+  - name: fct_population_location_key_resolves
+    description: Every population row joins to a real location dimension row.
+    model: fct_population_annual
+    type: relationships
+    column: location_key
+    to_model: dim_location
+    to_column: location_key
+
+  - name: fct_activity_has_no_unknown_members
+    description: >
+      Stronger than referential integrity: no fact row should have fallen
+      through to the Unknown (-1) member of any dimension. Unknown members
+      exist so that unmatched rows can be counted rather than dropped - if any
+      appear here, a join went wrong upstream.
+    model: fct_hospital_activity
+    type: expression
+    expression: date_key <> -1 AND location_key <> -1 AND indicator_key <> -1
+
+  # -- Domain values -------------------------------------------------------
+  - name: dim_indicator_semantics_are_known
+    description: >
+      Guards the stock/flow classification that decides whether a measure may
+      be summed over time. An unrecognised value here means a new indicator
+      arrived and the aggregation rules have not been reviewed.
+    model: dim_indicator
+    type: accepted_values
+    column: measure_semantics
+    values: ["Stock (point-in-time)", "Flow (period total)", "Unknown"]
+
+  - name: dim_indicator_care_settings_are_known
+    model: dim_indicator
+    type: accepted_values
+    column: care_setting
+    values: ["Intensive care", "All hospital", "Unknown"]
+
+  - name: dim_location_types_are_known
+    model: dim_location
+    type: accepted_values
+    column: location_type
+    values: ["Country", "Sub-national", "Unknown"]
+
+  - name: coverage_grades_are_known
+    model: mart_location_coverage
+    type: accepted_values
+    column: coverage_grade
+    values: ["Complete", "Partial", "Sparse"]
+
+  - name: reporting_locations_are_all_classified
+    description: >
+      Every location that reports activity must have a region. An unclassified
+      reporting location means a publisher code arrived that neither ISO 3166
+      nor config/location_overrides.csv covers, and it would vanish from every
+      geographic rollup.
+    model: dim_location
+    type: expression
+    expression: region IS NOT NULL AND region <> 'Unknown'
+    where: reports_hospital_activity
+
+  # -- Business rules ------------------------------------------------------
+  - name: activity_values_are_not_negative
+    description: A negative bed or admission count is not a small number.
+    model: fct_hospital_activity
+    type: expression
+    expression: reported_value >= 0
+
+  - name: population_is_positive
+    model: fct_population_annual
+    type: expression
+    expression: population > 0
+
+  - name: per_100k_is_consistent_with_per_million
+    description: >
+      The two scales of the publisher's rate must be exactly proportional -
+      a unit-conversion regression test.
+    model: fct_hospital_activity
+    type: expression
+    expression: abs(reported_per_100k * 10 - reported_per_million) < 1e-9
+    where: reported_per_million IS NOT NULL
+
+  - name: event_dates_are_plausible
+    description: >
+      No observation may predate the collection or come from the future.
+    model: fct_hospital_activity
+    type: expression
+    expression: event_date >= DATE '2020-01-01' AND event_date <= current_date
+
+  - name: dim_date_is_gapless
+    description: >
+      A date dimension with a missing day silently drops facts from every
+      time-series join. Asserts that the row count equals the span it covers.
+    type: sql
+    sql: |
+      SELECT
+          count(*)                                                  AS rows_present,
+          date_diff('day', min(full_date), max(full_date)) + 1       AS days_in_span
+      FROM dim_date
+      WHERE date_key <> -1
+      HAVING count(*) <> date_diff('day', min(full_date), max(full_date)) + 1
+
+  # -- Reconciliation against an independent denominator -------------------
+  - name: derived_rate_reconciles_with_publisher
+    description: >
+      At least 95% of comparable rows must agree within 5% between the
+      publisher's population-adjusted rate and the one derived here from World
+      Bank population. This is the control that catches a silently rebased
+      denominator upstream.
+    requires_full_volume: true
+    type: sql
+    sql: |
+      SELECT
+          round(100.0 * sum(CASE WHEN abs(rate_variance_pct) <= 5 THEN 1 ELSE 0 END)
+                / count(*), 2) AS pct_within_tolerance
+      FROM fct_hospital_activity
+      WHERE rate_variance_pct IS NOT NULL
+      HAVING 100.0 * sum(CASE WHEN abs(rate_variance_pct) <= 5 THEN 1 ELSE 0 END)
+             / count(*) < 95.0
+
+  - name: no_new_denominator_mismatches
+    description: >
+      Cyprus is a known and documented mismatch - hospital returns cover the
+      government-controlled area while the World Bank series covers the whole
+      island - so it is exempted by name. Any *other* location drifting past
+      10% is a new problem and is surfaced as a warning for review.
+    severity: warn
+    type: sql
+    sql: |
+      SELECT DISTINCT location_name, median_variance_pct
+      FROM mart_rate_reconciliation
+      WHERE denominator_agreement = 'Definitional mismatch'
+        AND source_location_code NOT IN ('CYP')
+
+  # -- Volume and regression guards ----------------------------------------
+  - name: fact_volume_is_plausible
+    description: >
+      Guards against a truncated download that still parses. The lower bound
+      sits just under the observed volume; the upper bound is generous.
+    requires_full_volume: true
+    model: fct_hospital_activity
+    type: row_count
+    min: 100000
+    max: 5000000
+
+  - name: dimensions_are_populated
+    requires_full_volume: true
+    model: dim_location
+    type: row_count
+    min: 200
+
+  - name: series_has_not_regressed
+    description: >
+      The fact table must still reach the last date the source was known to
+      publish. If a republished upstream file is truncated, this catches it
+      even though every other test would still pass.
+    requires_full_volume: true
+    type: sql
+    sql: |
+      SELECT max(event_date) AS latest_event_date
+      FROM fct_hospital_activity
+      HAVING max(event_date) < DATE '2024-08-12'
+
+  - name: every_source_was_ingested_this_run
+    description: >
+      Pipeline freshness (as distinct from data freshness): the most recent
+      ingestion of every source must be within the last 7 days.
+    severity: warn
+    type: sql
+    sql: |
+      SELECT source_name, max(fetched_at_utc) AS last_fetched
+      FROM meta_ingestion_runs
+      GROUP BY source_name
+      HAVING max(CAST(fetched_at_utc AS TIMESTAMP)) < now() - INTERVAL 7 DAY

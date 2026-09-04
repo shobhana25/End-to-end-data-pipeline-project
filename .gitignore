@@ -1,0 +1,21 @@
+# Data lake / warehouse artefacts are reproducible: rebuild with `make all`
+data/raw/*
+data/staged/*
+data/warehouse/*
+!data/**/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

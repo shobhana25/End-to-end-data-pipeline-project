@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install ruff==0.9.4
+      - run: ruff check .
+      - run: ruff format --check .
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      # The suite builds the entire pipeline - ingest, stage, transform,
+      # quality, dashboard - against the committed fixtures, so it needs no
+      # network access and no live publisher.
+      - run: pytest -v
+
+  pipeline:
+    name: Offline pipeline run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      # Prove `cli all` works end to end without reaching the internet by
+      # seeding the landing zone from the fixtures and running in offline mode.
+      - name: Seed the landing zone from fixtures
+        run: |
+          mkdir -p data/raw
+          cp tests/fixtures/owid_hospitalisations.csv data/raw/
+          cp tests/fixtures/iso_3166_countries.csv    data/raw/
+          cp tests/fixtures/world_bank_population.csv data/raw/
+      # The fixtures are a small slice of the real feeds, so point the run at
+      # the fixture registry and skip the assertions whose thresholds are
+      # calibrated to production volume.
+      - name: Run the pipeline
+        run: |
+          python -m pipelines.cli all --offline \
+            --sources tests/fixtures/sources.yml \
+            --skip-volume-tests
+      - name: Publish the generated dashboard as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard
+          path: docs/index.html
+          if-no-files-found: error

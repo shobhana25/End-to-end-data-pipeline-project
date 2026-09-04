@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Star-schema warehouse of hospital and ICU capacity built from three public datasets, with reconciliation and quality tests.">
+<style>img{max-width:100%}[hidden]{display:none!important}</style>
+<title>Hospital Capacity Warehouse</title>
+<style>
+:root {
+  color-scheme: light;
+  --page:            #f9f9f7;
+  --surface-1:       #fcfcfb;
+  --text-primary:    #0b0b0b;
+  --text-secondary:  #52514e;
+  --text-muted:      #898781;
+  --grid:            #e1e0d9;
+  --axis:            #c3c2b7;
+  --border:          rgba(11, 11, 11, 0.10);
+  --series-1:        #2a78d6;
+  --series-2:        #eb6834;
+  --neutral-mark:    #c3c2b7;
+  --ord-1:           #86b6ef;
+  --ord-2:           #5598e7;
+  --ord-3:           #2a78d6;
+  --ord-4:           #1c5cab;
+  --good:            #0ca30c;
+  --warning:         #fab219;
+  --critical:        #d03b3b;
+  --tooltip-bg:      #0b0b0b;
+  --tooltip-ink:     #fcfcfb;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page:           #0d0d0d;
+    --surface-1:      #1a1a19;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #898781;
+    --grid:           #2c2c2a;
+    --axis:           #383835;
+    --border:         rgba(255, 255, 255, 0.10);
+    --series-1:       #3987e5;
+    --series-2:       #d95926;
+    --neutral-mark:   #52514e;
+    --tooltip-bg:     #fcfcfb;
+    --tooltip-ink:    #0b0b0b;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page:           #0d0d0d;
+  --surface-1:      #1a1a19;
+  --text-primary:   #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted:     #898781;
+  --grid:           #2c2c2a;
+  --axis:           #383835;
+  --border:         rgba(255, 255, 255, 0.10);
+  --series-1:       #3987e5;
+  --series-2:       #d95926;
+  --neutral-mark:   #52514e;
+  --tooltip-bg:     #fcfcfb;
+  --tooltip-ink:    #0b0b0b;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--text-primary);
+  font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.shell { max-width: 1080px; margin: 0 auto; padding: 40px 24px 64px; }
+
+header.masthead { margin-bottom: 28px; }
+.eyebrow {
+  font-size: 12px; letter-spacing: 0.09em; text-transform: uppercase;
+  color: var(--text-muted); margin: 0 0 10px;
+}
+h1 { font-size: 30px; line-height: 1.2; margin: 0 0 10px; font-weight: 640; letter-spacing: -0.015em; }
+.standfirst { font-size: 16px; color: var(--text-secondary); margin: 0; max-width: 68ch; }
+.masthead-meta {
+  margin-top: 16px; font-size: 13px; color: var(--text-muted);
+  display: flex; flex-wrap: wrap; gap: 6px 18px;
+}
+.masthead-meta code { font-size: 12px; }
+
+h2 {
+  font-size: 13px; letter-spacing: 0.09em; text-transform: uppercase;
+  color: var(--text-muted); margin: 44px 0 6px; font-weight: 600;
+}
+.section-lede { margin: 0 0 18px; color: var(--text-secondary); max-width: 74ch; font-size: 14.5px; }
+
+.card {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px 22px;
+}
+.card + .card { margin-top: 16px; }
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 12px; }
+.tile {
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 12px; padding: 16px 18px;
+}
+.tile-value { font-size: 27px; font-weight: 640; letter-spacing: -0.02em; line-height: 1.1; }
+.tile-label { font-size: 12.5px; color: var(--text-muted); margin-top: 5px; }
+.tile-note { font-size: 12.5px; color: var(--text-secondary); margin-top: 3px; }
+.tile-value.is-good { color: var(--good); }
+
+.panel { margin: 0; }
+.panel + .panel { margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--border); }
+.panel figcaption { margin-bottom: 6px; }
+.panel-title { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 15px; }
+.panel-sub { display: block; font-size: 13px; color: var(--text-muted); margin-top: 2px; }
+.swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; flex: none; }
+
+.chart-wrap { position: relative; }
+.chart { display: block; width: 100%; height: auto; overflow: visible; }
+.grid { stroke: var(--grid); stroke-width: 1; }
+.axis { stroke: var(--axis); stroke-width: 1; }
+.tick { fill: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.peak-label { fill: var(--text-secondary); font-size: 11.5px; font-weight: 600; }
+.bar-label { fill: var(--text-secondary); font-size: 12.5px; }
+.bar-label.is-highlight { fill: var(--text-primary); font-weight: 640; }
+.bar-value { fill: var(--text-secondary); font-size: 12px; font-variant-numeric: tabular-nums; }
+.bar-highlight .bar-value { fill: var(--text-primary); font-weight: 640; }
+.bar { cursor: default; }
+.bar:hover path { opacity: 0.82; }
+.empty { color: var(--text-muted); font-size: 14px; }
+
+.crosshair { stroke: var(--axis); stroke-width: 1; }
+.tooltip {
+  position: absolute; z-index: 5; pointer-events: none;
+  background: var(--tooltip-bg); color: var(--tooltip-ink);
+  padding: 7px 10px; border-radius: 7px; font-size: 12.5px; line-height: 1.45;
+  max-width: 280px; transform: translate(-50%, calc(-100% - 12px)); white-space: nowrap;
+}
+.tooltip b { font-weight: 640; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 12px 0 0; font-size: 12.5px; color: var(--text-secondary); }
+.legend span { display: inline-flex; align-items: center; gap: 7px; }
+
+.table-scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th, td { text-align: left; padding: 8px 12px 8px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { font-size: 11.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); font-weight: 600; white-space: nowrap; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; padding-right: 0; }
+tbody tr:last-child td { border-bottom: 0; }
+code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.trunc { color: var(--text-muted); }
+
+.pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 999px;
+  border: 1px solid var(--border); white-space: nowrap;
+}
+.pill.pass { color: var(--good); }
+.pill.warn { color: var(--warning); }
+.pill.fail { color: var(--critical); }
+.pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+
+.note {
+  border-left: 3px solid var(--series-2); padding: 2px 0 2px 14px;
+  margin: 18px 0 0; color: var(--text-secondary); font-size: 14px; max-width: 74ch;
+}
+.note b { color: var(--text-primary); }
+
+footer { margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 13px; }
+footer a { color: var(--text-secondary); }
+a { color: var(--series-1); }
+
+@media (max-width: 640px) {
+  .shell { padding: 28px 16px 48px; }
+  h1 { font-size: 24px; }
+  .tile-value { font-size: 23px; }
+}
+</style>
+</head>
+<body>
+
+<div class="shell">
+
+<header class="masthead">
+  <p class="eyebrow">End-to-end data pipeline &middot; dimensional warehouse</p>
+  <h1>Hospital and intensive care capacity</h1>
+  <p class="standfirst">
+    A star-schema warehouse built from three public datasets, with every rate
+    independently recomputed and every model assertion-tested. This page is
+    generated from the warehouse on each run &mdash; no figure below is typed by hand.
+  </p>
+  <p class="masthead-meta">
+    <span>Warehouse built 2026-09-04 02:38:28 UTC</span>
+    <span>115,262 fact rows across 50 locations</span>
+    <span>Sources: Our World in Data &middot; World Bank &middot; ISO 3166</span>
+  </p>
+</header>
+
+<div class="tiles"><div class="tile"><div class="tile-value">115,262</div><div class="tile-label">Fact rows</div><div class="tile-note">one per location, date and measure</div></div><div class="tile"><div class="tile-value">50</div><div class="tile-label">Reporting locations</div><div class="tile-note">conformed to ISO 3166</div></div><div class="tile"><div class="tile-value">2020 – 2024</div><div class="tile-label">Period covered</div><div class="tile-note">6 Jan 2020 to 12 Aug 2024</div></div><div class="tile"><div class="tile-value is-good">29/29</div><div class="tile-label">Data quality tests passed</div><div class="tile-note">0 blocking failures</div></div></div>
+
+<h2>Australia in detail</h2>
+<p class="section-lede">
+  Occupancy is a <em>stock</em> &mdash; beds full at a point in time &mdash; so it is
+  averaged within each month, never summed. The two measures sit on separate
+  panels rather than a shared axis: intensive care and all-hospital occupancy
+  differ by more than an order of magnitude, and forcing them onto one plot
+  would invent a relationship the data does not contain.
+</p>
+<div class="card"><figure class="panel" id="panel-icu"><figcaption><span class="panel-title"><span class="swatch" style="background:var(--series-1)"></span>Australia · intensive care occupancy</span><span class="panel-sub">Monthly mean COVID-19 ICU beds occupied per 100,000 people</span></figcaption><div class="chart-wrap" data-hover="line" data-series='{&quot;left&quot;: 52, &quot;top&quot;: 16, &quot;plotWidth&quot;: 828, &quot;plotHeight&quot;: 164, &quot;step&quot;: 18.4, &quot;points&quot;: [{&quot;x&quot;: 52.0, &quot;y&quot;: 154.3, &quot;label&quot;: &quot;2020-03&quot;, &quot;value&quot;: &quot;0.31 /100k&quot;, &quot;tip&quot;: &quot;0.31 per 100k mean \u00b7 peak 0.31 \u00b7 82 beds mean \u00b7 1 days reported&quot;}, {&quot;x&quot;: 70.4, &quot;y&quot;: 159.9, &quot;label&quot;: &quot;2020-04&quot;, &quot;value&quot;: &quot;0.25 /100k&quot;, &quot;tip&quot;: &quot;0.25 per 100k mean \u00b7 peak 0.37 \u00b7 64 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 88.8, &quot;y&quot;: 175.7, &quot;label&quot;: &quot;2020-05&quot;, &quot;value&quot;: &quot;0.05 /100k&quot;, &quot;tip&quot;: &quot;0.05 per 100k mean \u00b7 peak 0.11 \u00b7 14 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 107.2, &quot;y&quot;: 179.2, &quot;label&quot;: &quot;2020-06&quot;, &quot;value&quot;: &quot;0.01 /100k&quot;, &quot;tip&quot;: &quot;0.01 per 100k mean \u00b7 peak 0.02 \u00b7 2 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 125.6, &quot;y&quot;: 171.4, &quot;label&quot;: &quot;2020-07&quot;, &quot;value&quot;: &quot;0.11 /100k&quot;, &quot;tip&quot;: &quot;0.11 per 100k mean \u00b7 peak 0.19 \u00b7 28 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 144.0, &quot;y&quot;: 166.0, &quot;label&quot;: &quot;2020-08&quot;, &quot;value&quot;: &quot;0.17 /100k&quot;, &quot;tip&quot;: &quot;0.17 per 100k mean \u00b7 peak 0.21 \u00b7 45 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 162.4, &quot;y&quot;: 174.7, &quot;label&quot;: &quot;2020-09&quot;, &quot;value&quot;: &quot;0.06 /100k&quot;, &quot;tip&quot;: &quot;0.06 per 100k mean \u00b7 peak 0.12 \u00b7 17 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 180.8, &quot;y&quot;: 179.4, &quot;label&quot;: &quot;2020-10&quot;, &quot;value&quot;: &quot;0.01 /100k&quot;, &quot;tip&quot;: &quot;0.01 per 100k mean \u00b7 peak 0.02 \u00b7 2 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 199.2, &quot;y&quot;: 179.9, &quot;label&quot;: &quot;2020-11&quot;, &quot;value&quot;: &quot;0 /100k&quot;, &quot;tip&quot;: &quot;0.00 per 100k mean \u00b7 peak 0.00 \u00b7 0 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 217.6, &quot;y&quot;: 180.0, &quot;label&quot;: &quot;2020-12&quot;, &quot;value&quot;: &quot;0 /100k&quot;, &quot;tip&quot;: &quot;0.00 per 100k mean \u00b7 peak 0.00 \u00b7 0 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 236.0, &quot;y&quot;: 179.9, &quot;label&quot;: &quot;2021-01&quot;, &quot;value&quot;: &quot;0 /100k&quot;, &quot;tip&quot;: &quot;0.00 per 100k mean \u00b7 peak 0.01 \u00b7 0 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 254.4, &quot;y&quot;: 179.9, &quot;label&quot;: &quot;2021-02&quot;, &quot;value&quot;: &quot;0 /100k&quot;, &quot;tip&quot;: &quot;0.00 per 100k mean \u00b7 peak 0.00 \u00b7 0 beds mean \u00b7 28 days reported&quot;}, {&quot;x&quot;: 272.8, &quot;y&quot;: 179.7, &quot;label&quot;: &quot;2021-03&quot;, &quot;value&quot;: &quot;0 /100k&quot;, &quot;tip&quot;: &quot;0.00 per 100k mean \u00b7 peak 0.01 \u00b7 1 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 291.2, &quot;y&quot;: 179.4, &quot;label&quot;: &quot;2021-04&quot;, &quot;value&quot;: &quot;0.01 /100k&quot;, &quot;tip&quot;: &quot;0.01 per 100k mean \u00b7 peak 0.01 \u00b7 2 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 309.6, &quot;y&quot;: 179.5, &quot;label&quot;: &quot;2021-05&quot;, &quot;value&quot;: &quot;0.01 /100k&quot;, &quot;tip&quot;: &quot;0.01 per 100k mean \u00b7 peak 0.01 \u00b7 2 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 328.0, &quot;y&quot;: 179.8, &quot;label&quot;: &quot;2021-06&quot;, &quot;value&quot;: &quot;0 /100k&quot;, &quot;tip&quot;: &quot;0.00 per 100k mean \u00b7 peak 0.01 \u00b7 1 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 346.4, &quot;y&quot;: 171.2, &quot;label&quot;: &quot;2021-07&quot;, &quot;value&quot;: &quot;0.11 /100k&quot;, &quot;tip&quot;: &quot;0.11 per 100k mean \u00b7 peak 0.24 \u00b7 28 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 364.8, &quot;y&quot;: 151.1, &quot;label&quot;: &quot;2021-08&quot;, &quot;value&quot;: &quot;0.35 /100k&quot;, &quot;tip&quot;: &quot;0.35 per 100k mean \u00b7 peak 0.67 \u00b7 92 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 383.2, &quot;y&quot;: 96.9, &quot;label&quot;: &quot;2021-09&quot;, &quot;value&quot;: &quot;1.01 /100k&quot;, &quot;tip&quot;: &quot;1.01 per 100k mean \u00b7 peak 1.17 \u00b7 265 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 401.6, &quot;y&quot;: 92.6, &quot;label&quot;: &quot;2021-10&quot;, &quot;value&quot;: &quot;1.07 /100k&quot;, &quot;tip&quot;: &quot;1.07 per 100k mean \u00b7 peak 1.19 \u00b7 279 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 420.0, &quot;y&quot;: 133.9, &quot;label&quot;: &quot;2021-11&quot;, &quot;value&quot;: &quot;0.56 /100k&quot;, &quot;tip&quot;: &quot;0.56 per 100k mean \u00b7 peak 0.78 \u00b7 147 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 438.4, &quot;y&quot;: 133.7, &quot;label&quot;: &quot;2021-12&quot;, &quot;value&quot;: &quot;0.56 /100k&quot;, &quot;tip&quot;: &quot;0.56 per 100k mean \u00b7 peak 0.73 \u00b7 148 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 456.8, &quot;y&quot;: 70.3, &quot;label&quot;: &quot;2022-01&quot;, &quot;value&quot;: &quot;1.34 /100k&quot;, &quot;tip&quot;: &quot;1.34 per 100k mean \u00b7 peak 1.62 \u00b7 350 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 475.2, &quot;y&quot;: 109.5, &quot;label&quot;: &quot;2022-02&quot;, &quot;value&quot;: &quot;0.86 /100k&quot;, &quot;tip&quot;: &quot;0.86 per 100k mean \u00b7 peak 1.33 \u00b7 225 beds mean \u00b7 28 days reported&quot;}, {&quot;x&quot;: 493.6, &quot;y&quot;: 147.7, &quot;label&quot;: &quot;2022-03&quot;, &quot;value&quot;: &quot;0.39 /100k&quot;, &quot;tip&quot;: &quot;0.39 per 100k mean \u00b7 peak 0.46 \u00b7 103 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 512.0, &quot;y&quot;: 140.1, &quot;label&quot;: &quot;2022-04&quot;, &quot;value&quot;: &quot;0.49 /100k&quot;, &quot;tip&quot;: &quot;0.49 per 100k mean \u00b7 peak 0.61 \u00b7 127 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 530.4, &quot;y&quot;: 143.2, &quot;label&quot;: &quot;2022-05&quot;, &quot;value&quot;: &quot;0.45 /100k&quot;, &quot;tip&quot;: &quot;0.45 per 100k mean \u00b7 peak 0.55 \u00b7 118 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 548.8, &quot;y&quot;: 148.5, &quot;label&quot;: &quot;2022-06&quot;, &quot;value&quot;: &quot;0.38 /100k&quot;, &quot;tip&quot;: &quot;0.38 per 100k mean \u00b7 peak 0.47 \u00b7 101 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 567.2, &quot;y&quot;: 134.1, &quot;label&quot;: &quot;2022-07&quot;, &quot;value&quot;: &quot;0.56 /100k&quot;, &quot;tip&quot;: &quot;0.56 per 100k mean \u00b7 peak 0.68 \u00b7 146 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 585.6, &quot;y&quot;: 141.5, &quot;label&quot;: &quot;2022-08&quot;, &quot;value&quot;: &quot;0.47 /100k&quot;, &quot;tip&quot;: &quot;0.47 per 100k mean \u00b7 peak 0.70 \u00b7 123 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 604.0, &quot;y&quot;: 161.5, &quot;label&quot;: &quot;2022-09&quot;, &quot;value&quot;: &quot;0.23 /100k&quot;, &quot;tip&quot;: &quot;0.23 per 100k mean \u00b7 peak 0.32 \u00b7 59 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 622.4, &quot;y&quot;: 166.9, &quot;label&quot;: &quot;2022-10&quot;, &quot;value&quot;: &quot;0.16 /100k&quot;, &quot;tip&quot;: &quot;0.16 per 100k mean \u00b7 peak 0.18 \u00b7 42 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 640.8, &quot;y&quot;: 161.1, &quot;label&quot;: &quot;2022-11&quot;, &quot;value&quot;: &quot;0.23 /100k&quot;, &quot;tip&quot;: &quot;0.23 per 100k mean \u00b7 peak 0.31 \u00b7 60 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 659.2, &quot;y&quot;: 150.2, &quot;label&quot;: &quot;2022-12&quot;, &quot;value&quot;: &quot;0.36 /100k&quot;, &quot;tip&quot;: &quot;0.36 per 100k mean \u00b7 peak 0.46 \u00b7 95 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 677.6, &quot;y&quot;: 152.8, &quot;label&quot;: &quot;2023-01&quot;, &quot;value&quot;: &quot;0.33 /100k&quot;, &quot;tip&quot;: &quot;0.33 per 100k mean \u00b7 peak 0.46 \u00b7 87 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 696.0, &quot;y&quot;: 166.1, &quot;label&quot;: &quot;2023-02&quot;, &quot;value&quot;: &quot;0.17 /100k&quot;, &quot;tip&quot;: &quot;0.17 per 100k mean \u00b7 peak 0.20 \u00b7 44 beds mean \u00b7 28 days reported&quot;}, {&quot;x&quot;: 714.4, &quot;y&quot;: 170.1, &quot;label&quot;: &quot;2023-03&quot;, &quot;value&quot;: &quot;0.12 /100k&quot;, &quot;tip&quot;: &quot;0.12 per 100k mean \u00b7 peak 0.13 \u00b7 32 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 732.8, &quot;y&quot;: 164.7, &quot;label&quot;: &quot;2023-04&quot;, &quot;value&quot;: &quot;0.19 /100k&quot;, &quot;tip&quot;: &quot;0.19 per 100k mean \u00b7 peak 0.28 \u00b7 49 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 751.2, &quot;y&quot;: 159.9, &quot;label&quot;: &quot;2023-05&quot;, &quot;value&quot;: &quot;0.24 /100k&quot;, &quot;tip&quot;: &quot;0.24 per 100k mean \u00b7 peak 0.28 \u00b7 64 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 769.6, &quot;y&quot;: 158.8, &quot;label&quot;: &quot;2023-06&quot;, &quot;value&quot;: &quot;0.26 /100k&quot;, &quot;tip&quot;: &quot;0.26 per 100k mean \u00b7 peak 0.32 \u00b7 68 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 788.0, &quot;y&quot;: 168.9, &quot;label&quot;: &quot;2023-07&quot;, &quot;value&quot;: &quot;0.14 /100k&quot;, &quot;tip&quot;: &quot;0.14 per 100k mean \u00b7 peak 0.18 \u00b7 35 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 806.4, &quot;y&quot;: 172.0, &quot;label&quot;: &quot;2023-08&quot;, &quot;value&quot;: &quot;0.1 /100k&quot;, &quot;tip&quot;: &quot;0.10 per 100k mean \u00b7 peak 0.13 \u00b7 26 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 824.8, &quot;y&quot;: 173.1, &quot;label&quot;: &quot;2023-09&quot;, &quot;value&quot;: &quot;0.08 /100k&quot;, &quot;tip&quot;: &quot;0.08 per 100k mean \u00b7 peak 0.10 \u00b7 22 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 843.2, &quot;y&quot;: 172.1, &quot;label&quot;: &quot;2023-10&quot;, &quot;value&quot;: &quot;0.1 /100k&quot;, &quot;tip&quot;: &quot;0.10 per 100k mean \u00b7 peak 0.12 \u00b7 25 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 861.6, &quot;y&quot;: 164.5, &quot;label&quot;: &quot;2023-11&quot;, &quot;value&quot;: &quot;0.19 /100k&quot;, &quot;tip&quot;: &quot;0.19 per 100k mean \u00b7 peak 0.23 \u00b7 49 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 880.0, &quot;y&quot;: 162.3, &quot;label&quot;: &quot;2023-12&quot;, &quot;value&quot;: &quot;0.22 /100k&quot;, &quot;tip&quot;: &quot;0.22 per 100k mean \u00b7 peak 0.22 \u00b7 57 beds mean \u00b7 7 days reported&quot;}]}'><svg class="chart" viewBox="0 0 900 210" role="img" preserveAspectRatio="xMidYMid meet" aria-label="Australia · intensive care occupancy. Monthly mean COVID-19 ICU beds occupied per 100,000 people"><line class="grid" x1="52" y1="180.0" x2="880" y2="180.0" /><text class="tick tick-y" x="44" y="183.5" text-anchor="end">0</text><line class="grid" x1="52" y1="139.0" x2="880" y2="139.0" /><text class="tick tick-y" x="44" y="142.5" text-anchor="end">0.5</text><line class="grid" x1="52" y1="98.0" x2="880" y2="98.0" /><text class="tick tick-y" x="44" y="101.5" text-anchor="end">1</text><line class="grid" x1="52" y1="57.0" x2="880" y2="57.0" /><text class="tick tick-y" x="44" y="60.5" text-anchor="end">1.5</text><line class="grid" x1="52" y1="16.0" x2="880" y2="16.0" /><text class="tick tick-y" x="44" y="19.5" text-anchor="end">2</text><text class="tick tick-x" x="52.0" y="198" text-anchor="middle">2020</text><text class="tick tick-x" x="236.0" y="198" text-anchor="middle">2021</text><text class="tick tick-x" x="456.8" y="198" text-anchor="middle">2022</text><text class="tick tick-x" x="677.6" y="198" text-anchor="middle">2023</text><line class="axis" x1="52" y1="180" x2="880" y2="180" /><path d="M 52.0 180 L 52.0 154.3 L 70.4 159.9 L 88.8 175.7 L 107.2 179.2 L 125.6 171.4 L 144.0 166.0 L 162.4 174.7 L 180.8 179.4 L 199.2 179.9 L 217.6 180.0 L 236.0 179.9 L 254.4 179.9 L 272.8 179.7 L 291.2 179.4 L 309.6 179.5 L 328.0 179.8 L 346.4 171.2 L 364.8 151.1 L 383.2 96.9 L 401.6 92.6 L 420.0 133.9 L 438.4 133.7 L 456.8 70.3 L 475.2 109.5 L 493.6 147.7 L 512.0 140.1 L 530.4 143.2 L 548.8 148.5 L 567.2 134.1 L 585.6 141.5 L 604.0 161.5 L 622.4 166.9 L 640.8 161.1 L 659.2 150.2 L 677.6 152.8 L 696.0 166.1 L 714.4 170.1 L 732.8 164.7 L 751.2 159.9 L 769.6 158.8 L 788.0 168.9 L 806.4 172.0 L 824.8 173.1 L 843.2 172.1 L 861.6 164.5 L 880.0 162.3 L 880.0 180 Z" fill="var(--series-1)" opacity="0.10" /><path d="M 52.0 154.3 L 70.4 159.9 L 88.8 175.7 L 107.2 179.2 L 125.6 171.4 L 144.0 166.0 L 162.4 174.7 L 180.8 179.4 L 199.2 179.9 L 217.6 180.0 L 236.0 179.9 L 254.4 179.9 L 272.8 179.7 L 291.2 179.4 L 309.6 179.5 L 328.0 179.8 L 346.4 171.2 L 364.8 151.1 L 383.2 96.9 L 401.6 92.6 L 420.0 133.9 L 438.4 133.7 L 456.8 70.3 L 475.2 109.5 L 493.6 147.7 L 512.0 140.1 L 530.4 143.2 L 548.8 148.5 L 567.2 134.1 L 585.6 141.5 L 604.0 161.5 L 622.4 166.9 L 640.8 161.1 L 659.2 150.2 L 677.6 152.8 L 696.0 166.1 L 714.4 170.1 L 732.8 164.7 L 751.2 159.9 L 769.6 158.8 L 788.0 168.9 L 806.4 172.0 L 824.8 173.1 L 843.2 172.1 L 861.6 164.5 L 880.0 162.3" fill="none" stroke="var(--series-1)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" /><circle cx="456.8" cy="70.3" r="4" fill="var(--series-1)" stroke="var(--surface-1)" stroke-width="2" /><text class="peak-label" x="464.8" y="60.3" text-anchor="start">peak 1.34 /100k · 2022-01</text></svg><div class="tooltip" hidden></div></div></figure><figure class="panel" id="panel-ward"><figcaption><span class="panel-title"><span class="swatch" style="background:var(--series-2)"></span>Australia · all-hospital occupancy</span><span class="panel-sub">Monthly mean COVID-19 hospital beds occupied per 100,000 people</span></figcaption><div class="chart-wrap" data-hover="line" data-series='{&quot;left&quot;: 52, &quot;top&quot;: 16, &quot;plotWidth&quot;: 828, &quot;plotHeight&quot;: 164, &quot;step&quot;: 18.4, &quot;points&quot;: [{&quot;x&quot;: 52.0, &quot;y&quot;: 166.7, &quot;label&quot;: &quot;2020-03&quot;, &quot;value&quot;: &quot;1.63 /100k&quot;, &quot;tip&quot;: &quot;1.63 per 100k mean \u00b7 peak 1.63 \u00b7 426 beds mean \u00b7 1 days reported&quot;}, {&quot;x&quot;: 70.4, &quot;y&quot;: 172.9, &quot;label&quot;: &quot;2020-04&quot;, &quot;value&quot;: &quot;0.86 /100k&quot;, &quot;tip&quot;: &quot;0.86 per 100k mean \u00b7 peak 1.87 \u00b7 225 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 88.8, &quot;y&quot;: 178.6, &quot;label&quot;: &quot;2020-05&quot;, &quot;value&quot;: &quot;0.17 /100k&quot;, &quot;tip&quot;: &quot;0.17 per 100k mean \u00b7 peak 0.30 \u00b7 45 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 107.2, &quot;y&quot;: 179.5, &quot;label&quot;: &quot;2020-06&quot;, &quot;value&quot;: &quot;0.07 /100k&quot;, &quot;tip&quot;: &quot;0.07 per 100k mean \u00b7 peak 0.10 \u00b7 17 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 125.6, &quot;y&quot;: 175.3, &quot;label&quot;: &quot;2020-07&quot;, &quot;value&quot;: &quot;0.57 /100k&quot;, &quot;tip&quot;: &quot;0.57 per 100k mean \u00b7 peak 1.53 \u00b7 150 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 144.0, &quot;y&quot;: 161.1, &quot;label&quot;: &quot;2020-08&quot;, &quot;value&quot;: &quot;2.31 /100k&quot;, &quot;tip&quot;: &quot;2.31 per 100k mean \u00b7 peak 2.65 \u00b7 604 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 162.4, &quot;y&quot;: 174.9, &quot;label&quot;: &quot;2020-09&quot;, &quot;value&quot;: &quot;0.62 /100k&quot;, &quot;tip&quot;: &quot;0.62 per 100k mean \u00b7 peak 1.65 \u00b7 163 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 180.8, &quot;y&quot;: 179.2, &quot;label&quot;: &quot;2020-10&quot;, &quot;value&quot;: &quot;0.1 /100k&quot;, &quot;tip&quot;: &quot;0.10 per 100k mean \u00b7 peak 0.19 \u00b7 26 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 199.2, &quot;y&quot;: 179.3, &quot;label&quot;: &quot;2020-11&quot;, &quot;value&quot;: &quot;0.08 /100k&quot;, &quot;tip&quot;: &quot;0.08 per 100k mean \u00b7 peak 0.10 \u00b7 22 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 217.6, &quot;y&quot;: 179.2, &quot;label&quot;: &quot;2020-12&quot;, &quot;value&quot;: &quot;0.1 /100k&quot;, &quot;tip&quot;: &quot;0.10 per 100k mean \u00b7 peak 0.15 \u00b7 27 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 236.0, &quot;y&quot;: 179.0, &quot;label&quot;: &quot;2021-01&quot;, &quot;value&quot;: &quot;0.12 /100k&quot;, &quot;tip&quot;: &quot;0.12 per 100k mean \u00b7 peak 0.19 \u00b7 32 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 254.4, &quot;y&quot;: 179.6, &quot;label&quot;: &quot;2021-02&quot;, &quot;value&quot;: &quot;0.05 /100k&quot;, &quot;tip&quot;: &quot;0.05 per 100k mean \u00b7 peak 0.08 \u00b7 12 beds mean \u00b7 28 days reported&quot;}, {&quot;x&quot;: 272.8, &quot;y&quot;: 178.4, &quot;label&quot;: &quot;2021-03&quot;, &quot;value&quot;: &quot;0.2 /100k&quot;, &quot;tip&quot;: &quot;0.20 per 100k mean \u00b7 peak 0.33 \u00b7 52 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 291.2, &quot;y&quot;: 178.0, &quot;label&quot;: &quot;2021-04&quot;, &quot;value&quot;: &quot;0.25 /100k&quot;, &quot;tip&quot;: &quot;0.25 per 100k mean \u00b7 peak 0.33 \u00b7 65 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 309.6, &quot;y&quot;: 179.1, &quot;label&quot;: &quot;2021-05&quot;, &quot;value&quot;: &quot;0.11 /100k&quot;, &quot;tip&quot;: &quot;0.11 per 100k mean \u00b7 peak 0.24 \u00b7 28 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 328.0, &quot;y&quot;: 179.0, &quot;label&quot;: &quot;2021-06&quot;, &quot;value&quot;: &quot;0.12 /100k&quot;, &quot;tip&quot;: &quot;0.12 per 100k mean \u00b7 peak 0.26 \u00b7 32 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 346.4, &quot;y&quot;: 175.5, &quot;label&quot;: &quot;2021-07&quot;, &quot;value&quot;: &quot;0.54 /100k&quot;, &quot;tip&quot;: &quot;0.54 per 100k mean \u00b7 peak 1.05 \u00b7 142 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 364.8, &quot;y&quot;: 162.3, &quot;label&quot;: &quot;2021-08&quot;, &quot;value&quot;: &quot;2.16 /100k&quot;, &quot;tip&quot;: &quot;2.16 per 100k mean \u00b7 peak 3.85 \u00b7 564 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 383.2, &quot;y&quot;: 136.4, &quot;label&quot;: &quot;2021-09&quot;, &quot;value&quot;: &quot;5.32 /100k&quot;, &quot;tip&quot;: &quot;5.32 per 100k mean \u00b7 peak 5.92 \u00b7 1392 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 401.6, &quot;y&quot;: 137.0, &quot;label&quot;: &quot;2021-10&quot;, &quot;value&quot;: &quot;5.25 /100k&quot;, &quot;tip&quot;: &quot;5.25 per 100k mean \u00b7 peak 5.86 \u00b7 1373 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 420.0, &quot;y&quot;: 158.8, &quot;label&quot;: &quot;2021-11&quot;, &quot;value&quot;: &quot;2.58 /100k&quot;, &quot;tip&quot;: &quot;2.58 per 100k mean \u00b7 peak 3.89 \u00b7 676 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 438.4, &quot;y&quot;: 155.6, &quot;label&quot;: &quot;2021-12&quot;, &quot;value&quot;: &quot;2.97 /100k&quot;, &quot;tip&quot;: &quot;2.97 per 100k mean \u00b7 peak 6.13 \u00b7 779 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 456.8, &quot;y&quot;: 46.9, &quot;label&quot;: &quot;2022-01&quot;, &quot;value&quot;: &quot;16.23 /100k&quot;, &quot;tip&quot;: &quot;16.23 per 100k mean \u00b7 peak 20.59 \u00b7 4248 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 475.2, &quot;y&quot;: 85.5, &quot;label&quot;: &quot;2022-02&quot;, &quot;value&quot;: &quot;11.52 /100k&quot;, &quot;tip&quot;: &quot;11.52 per 100k mean \u00b7 peak 17.82 \u00b7 3016 beds mean \u00b7 28 days reported&quot;}, {&quot;x&quot;: 493.6, &quot;y&quot;: 118.5, &quot;label&quot;: &quot;2022-03&quot;, &quot;value&quot;: &quot;7.5 /100k&quot;, &quot;tip&quot;: &quot;7.50 per 100k mean \u00b7 peak 9.68 \u00b7 1965 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 512.0, &quot;y&quot;: 84.3, &quot;label&quot;: &quot;2022-04&quot;, &quot;value&quot;: &quot;11.67 /100k&quot;, &quot;tip&quot;: &quot;11.67 per 100k mean \u00b7 peak 12.95 \u00b7 3055 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 530.4, &quot;y&quot;: 86.8, &quot;label&quot;: &quot;2022-05&quot;, &quot;value&quot;: &quot;11.37 /100k&quot;, &quot;tip&quot;: &quot;11.37 per 100k mean \u00b7 peak 12.29 \u00b7 2976 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 548.8, &quot;y&quot;: 89.1, &quot;label&quot;: &quot;2022-06&quot;, &quot;value&quot;: &quot;11.08 /100k&quot;, &quot;tip&quot;: &quot;11.08 per 100k mean \u00b7 peak 12.51 \u00b7 2901 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 567.2, &quot;y&quot;: 34.3, &quot;label&quot;: &quot;2022-07&quot;, &quot;value&quot;: &quot;17.77 /100k&quot;, &quot;tip&quot;: &quot;17.77 per 100k mean \u00b7 peak 21.28 \u00b7 4651 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 585.6, &quot;y&quot;: 60.4, &quot;label&quot;: &quot;2022-08&quot;, &quot;value&quot;: &quot;14.58 /100k&quot;, &quot;tip&quot;: &quot;14.58 per 100k mean \u00b7 peak 19.11 \u00b7 3817 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 604.0, &quot;y&quot;: 113.3, &quot;label&quot;: &quot;2022-09&quot;, &quot;value&quot;: &quot;8.14 /100k&quot;, &quot;tip&quot;: &quot;8.14 per 100k mean \u00b7 peak 10.55 \u00b7 2130 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 622.4, &quot;y&quot;: 134.7, &quot;label&quot;: &quot;2022-10&quot;, &quot;value&quot;: &quot;5.52 /100k&quot;, &quot;tip&quot;: &quot;5.52 per 100k mean \u00b7 peak 5.97 \u00b7 1446 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 640.8, &quot;y&quot;: 119.9, &quot;label&quot;: &quot;2022-11&quot;, &quot;value&quot;: &quot;7.33 /100k&quot;, &quot;tip&quot;: &quot;7.33 per 100k mean \u00b7 peak 9.60 \u00b7 1918 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 659.2, &quot;y&quot;: 78.7, &quot;label&quot;: &quot;2022-12&quot;, &quot;value&quot;: &quot;12.36 /100k&quot;, &quot;tip&quot;: &quot;12.36 per 100k mean \u00b7 peak 14.00 \u00b7 3235 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 677.6, &quot;y&quot;: 92.3, &quot;label&quot;: &quot;2023-01&quot;, &quot;value&quot;: &quot;10.7 /100k&quot;, &quot;tip&quot;: &quot;10.70 per 100k mean \u00b7 peak 14.00 \u00b7 2801 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 696.0, &quot;y&quot;: 134.3, &quot;label&quot;: &quot;2023-02&quot;, &quot;value&quot;: &quot;5.57 /100k&quot;, &quot;tip&quot;: &quot;5.57 per 100k mean \u00b7 peak 7.46 \u00b7 1458 beds mean \u00b7 28 days reported&quot;}, {&quot;x&quot;: 714.4, &quot;y&quot;: 137.0, &quot;label&quot;: &quot;2023-03&quot;, &quot;value&quot;: &quot;5.25 /100k&quot;, &quot;tip&quot;: &quot;5.25 per 100k mean \u00b7 peak 5.99 \u00b7 1374 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 732.8, &quot;y&quot;: 120.5, &quot;label&quot;: &quot;2023-04&quot;, &quot;value&quot;: &quot;7.26 /100k&quot;, &quot;tip&quot;: &quot;7.26 per 100k mean \u00b7 peak 8.87 \u00b7 1899 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 751.2, &quot;y&quot;: 105.8, &quot;label&quot;: &quot;2023-05&quot;, &quot;value&quot;: &quot;9.05 /100k&quot;, &quot;tip&quot;: &quot;9.05 per 100k mean \u00b7 peak 9.68 \u00b7 2370 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 769.6, &quot;y&quot;: 102.6, &quot;label&quot;: &quot;2023-06&quot;, &quot;value&quot;: &quot;9.44 /100k&quot;, &quot;tip&quot;: &quot;9.44 per 100k mean \u00b7 peak 10.57 \u00b7 2472 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 788.0, &quot;y&quot;: 131.7, &quot;label&quot;: &quot;2023-07&quot;, &quot;value&quot;: &quot;5.88 /100k&quot;, &quot;tip&quot;: &quot;5.88 per 100k mean \u00b7 peak 7.31 \u00b7 1540 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 806.4, &quot;y&quot;: 148.4, &quot;label&quot;: &quot;2023-08&quot;, &quot;value&quot;: &quot;3.86 /100k&quot;, &quot;tip&quot;: &quot;3.86 per 100k mean \u00b7 peak 4.94 \u00b7 1009 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 824.8, &quot;y&quot;: 150.4, &quot;label&quot;: &quot;2023-09&quot;, &quot;value&quot;: &quot;3.61 /100k&quot;, &quot;tip&quot;: &quot;3.61 per 100k mean \u00b7 peak 3.87 \u00b7 946 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 843.2, &quot;y&quot;: 146.0, &quot;label&quot;: &quot;2023-10&quot;, &quot;value&quot;: &quot;4.14 /100k&quot;, &quot;tip&quot;: &quot;4.14 per 100k mean \u00b7 peak 4.87 \u00b7 1084 beds mean \u00b7 31 days reported&quot;}, {&quot;x&quot;: 861.6, &quot;y&quot;: 133.6, &quot;label&quot;: &quot;2023-11&quot;, &quot;value&quot;: &quot;5.66 /100k&quot;, &quot;tip&quot;: &quot;5.66 per 100k mean \u00b7 peak 6.16 \u00b7 1482 beds mean \u00b7 30 days reported&quot;}, {&quot;x&quot;: 880.0, &quot;y&quot;: 130.7, &quot;label&quot;: &quot;2023-12&quot;, &quot;value&quot;: &quot;6.01 /100k&quot;, &quot;tip&quot;: &quot;6.01 per 100k mean \u00b7 peak 6.05 \u00b7 1574 beds mean \u00b7 7 days reported&quot;}]}'><svg class="chart" viewBox="0 0 900 210" role="img" preserveAspectRatio="xMidYMid meet" aria-label="Australia · all-hospital occupancy. Monthly mean COVID-19 hospital beds occupied per 100,000 people"><line class="grid" x1="52" y1="180.0" x2="880" y2="180.0" /><text class="tick tick-y" x="44" y="183.5" text-anchor="end">0</text><line class="grid" x1="52" y1="139.0" x2="880" y2="139.0" /><text class="tick tick-y" x="44" y="142.5" text-anchor="end">5</text><line class="grid" x1="52" y1="98.0" x2="880" y2="98.0" /><text class="tick tick-y" x="44" y="101.5" text-anchor="end">10</text><line class="grid" x1="52" y1="57.0" x2="880" y2="57.0" /><text class="tick tick-y" x="44" y="60.5" text-anchor="end">15</text><line class="grid" x1="52" y1="16.0" x2="880" y2="16.0" /><text class="tick tick-y" x="44" y="19.5" text-anchor="end">20</text><text class="tick tick-x" x="52.0" y="198" text-anchor="middle">2020</text><text class="tick tick-x" x="236.0" y="198" text-anchor="middle">2021</text><text class="tick tick-x" x="456.8" y="198" text-anchor="middle">2022</text><text class="tick tick-x" x="677.6" y="198" text-anchor="middle">2023</text><line class="axis" x1="52" y1="180" x2="880" y2="180" /><path d="M 52.0 180 L 52.0 166.7 L 70.4 172.9 L 88.8 178.6 L 107.2 179.5 L 125.6 175.3 L 144.0 161.1 L 162.4 174.9 L 180.8 179.2 L 199.2 179.3 L 217.6 179.2 L 236.0 179.0 L 254.4 179.6 L 272.8 178.4 L 291.2 178.0 L 309.6 179.1 L 328.0 179.0 L 346.4 175.5 L 364.8 162.3 L 383.2 136.4 L 401.6 137.0 L 420.0 158.8 L 438.4 155.6 L 456.8 46.9 L 475.2 85.5 L 493.6 118.5 L 512.0 84.3 L 530.4 86.8 L 548.8 89.1 L 567.2 34.3 L 585.6 60.4 L 604.0 113.3 L 622.4 134.7 L 640.8 119.9 L 659.2 78.7 L 677.6 92.3 L 696.0 134.3 L 714.4 137.0 L 732.8 120.5 L 751.2 105.8 L 769.6 102.6 L 788.0 131.7 L 806.4 148.4 L 824.8 150.4 L 843.2 146.0 L 861.6 133.6 L 880.0 130.7 L 880.0 180 Z" fill="var(--series-2)" opacity="0.10" /><path d="M 52.0 166.7 L 70.4 172.9 L 88.8 178.6 L 107.2 179.5 L 125.6 175.3 L 144.0 161.1 L 162.4 174.9 L 180.8 179.2 L 199.2 179.3 L 217.6 179.2 L 236.0 179.0 L 254.4 179.6 L 272.8 178.4 L 291.2 178.0 L 309.6 179.1 L 328.0 179.0 L 346.4 175.5 L 364.8 162.3 L 383.2 136.4 L 401.6 137.0 L 420.0 158.8 L 438.4 155.6 L 456.8 46.9 L 475.2 85.5 L 493.6 118.5 L 512.0 84.3 L 530.4 86.8 L 548.8 89.1 L 567.2 34.3 L 585.6 60.4 L 604.0 113.3 L 622.4 134.7 L 640.8 119.9 L 659.2 78.7 L 677.6 92.3 L 696.0 134.3 L 714.4 137.0 L 732.8 120.5 L 751.2 105.8 L 769.6 102.6 L 788.0 131.7 L 806.4 148.4 L 824.8 150.4 L 843.2 146.0 L 861.6 133.6 L 880.0 130.7" fill="none" stroke="var(--series-2)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" /><circle cx="567.2" cy="34.3" r="4" fill="var(--series-2)" stroke="var(--surface-1)" stroke-width="2" /><text class="peak-label" x="575.2" y="24.3" text-anchor="start">peak 17.77 /100k · 2022-07</text></svg><div class="tooltip" hidden></div></div></figure></div>
+<div class="card"><div class="table-scroll"><table><thead><tr><th class="">Measure</th><th class="num">Days reported</th><th class="num">Peak beds</th><th class="num">Peak per 100k</th><th class="num">Mean per 100k</th></tr></thead><tbody><tr><td class="">Daily All hospital Occupancy</td><td class="num">1,347</td><td class="num">5,571 <span class="trunc">on 25 Jul 2022</span></td><td class="num">21.28</td><td class="num">5.23</td></tr><tr><td class="">Daily Intensive care Occupancy</td><td class="num">1,347</td><td class="num">424 <span class="trunc">on 18 Jan 2022</span></td><td class="num">1.62</td><td class="num">0.28</td></tr></tbody></table></div></div>
+
+<h2>International context</h2>
+<p class="section-lede">
+  Peak intensive care occupancy per 100,000 people &mdash; the highest single day
+  each country recorded. Absolute bed counts mostly measure how big a country
+  is, so the comparable figure is the population-adjusted one.
+</p>
+<div class="card"><div class="chart-wrap" data-hover="bar"><svg class="chart" viewBox="0 0 900 398" role="img" preserveAspectRatio="xMidYMid meet" aria-label="Ranked comparison"><g class="bar" data-tip="Czechia — peak 18.07 per 100k on 16 Mar 2021, 1,626 days reported"><text class="bar-label" x="140" y="16.0" text-anchor="end">Czechia</text><path d="M 150 4 h 590.4207500000001 a 4 4 0 0 1 4 4 v 8 a 4 4 0 0 1 -4 4 h -590.4207500000001 Z" fill="var(--neutral-mark)" /><rect class="bar-hit" x="150" y="1" width="658" height="26" fill="transparent" /><text class="bar-value" x="752.4" y="16.0">18.07</text></g><g class="bar" data-tip="Argentina — peak 17.51 per 100k on 14 Jun 2021, 647 days reported"><text class="bar-label" x="140" y="42.0" text-anchor="end">Argentina</text><path d="M 150 30 h 572.08887 a 4 4 0 0 1 4 4 v 8 a 4 4 0 0 1 -4 4 h -572.08887 Z" fill="var(--neutral-mark)" /><rect class="bar-hit" x="150" y="27" width="658" height="26" fill="transparent" /><text class="bar-value" x="734.1" y="42.0">17.51</text></g><g class="bar" data-tip="Chile — peak 17.37 per 100k on 27 Apr 2021, 1,248 days reported"><text class="bar-label" x="140" y="68.0" text-anchor="end">Chile</text><path d="M 150 56 h 567.6111799999999 a 4 4 0 0 1 4 4 v 8 a 4 4 0 0 1 -4 4 h -567.6111799999999 Z" fill="var(--neutral-mark)" /><rect class="bar-hit" x="150" y="53" width="658" height="26" fill="transparent" /><text class="bar-value" x="729.6" y="68.0">17.37</text></g><g class="bar" data-tip="Slovenia — peak 13.63 per 100k on 26 Nov 2021, 1,117 days reported"><text class="bar-label" x="140" y="94.0" text-anchor="end">Slovenia</text><path d="M 150 82 h 444.5289899999999 a 4 4 0 0 1 4 4 v 8 a 4 4 0 0 1 -4 4 h -444.5289899999999 Z" fill="var(--neutral-mark)" /><rect class="bar-hit" x="150" y="79" width="658" height="26" fill="transparent" /><text class="bar-value" x="606.5" y="94.0">13.63</text></g><g class="bar" data-tip="Latvia — peak 12.86 per 100k on 7 Nov 2021, 151 days reported"><text class="bar-label" x="140" y="120.0" text-anchor="end">Latvia</text><path d="M 150 108 h 419.10387000000003 a 4 4 0 0 1 4 4 v 8 a 4 4 0 0 1 -4 4 h -419.10387000000003 Z" fill="var(--neutral-mark)" /><rect class="bar-hit" x="150" y="105" width="658" height="26" fill="transparent" /><text class="bar-value" x="581.1" y="120.0">12.86</text></g><g class="bar" data-tip="Belgium — peak 12.65 per 100k on 9 Nov 2020, 1,209 days reported"><text class="bar-label" x="140" y="146.0" text-anchor="end">Belgium</text><path d="M 150 134 h 412.05011 a 4 4 0 0 1 4 4 v 8 a 4 4 0 0 1 -4 4 h -412.05011 Z" fill="var(--neutral-mark)" /><rect class="bar-hit" x="150" y="131" width="658" height="26" fill="transparent" /><text class="bar-value" x="574.1" y="146.0">12.65</text></g><g class="bar" data-tip="Bulgaria — peak 11.78 per 100k on 18 Apr 2021, 187 days reported"><text class="bar-label" x="140" y="172.0" text-anchor="end">Bulgaria</text><path d="M 150 160 h 383.60477 a 4 4 0 0 1 4 4 v 8 a 4 4 0 0 1 -4 4 h -383.60477 Z" fill="var(--neutral-mark)" /><rect class="bar-hit" x="150" y="157" width="658" height="26" fill="transparent" /><text class="bar-value" x="545.6" y="172.0">11.78</text></g><g class="bar" data-tip="Slovakia — peak 11.22 per 100k on 27 Feb 2021, 1,107 days reported"><text class="bar-label" x="140" y="198.0" text-anchor="end">Slovakia</text><path d="M 150 186 h 365.02285 a 4 4 0 0 1 4 4 v 8 a 4 4 0 0 1 -4 4 h -365.02285 Z" fill="var(--neutral-mark)" /><rect class="bar-hit" x="150" y="183" width="658" height="26" fill="transparent" /><text class="bar-value" x="527.0" y="198.0">11.22</text></g><g class="bar" data-tip="France — peak 10.35 per 100k on 8 Apr 2020, 1,109 days reported"><text class="bar-label" x="140" y="224.0" text-anchor="end">France</text><path d="M 150 212 h 336.53145 a 4 4 0 0 1 4 4 v 8 a 4 4 0 0 1 -4 4 h -336.53145 Z" fill="var(--neutral-mark)" /><rect class="bar-hit" x="150" y="209" width="658" height="26" fill="transparent" /><text class="bar-value" x="498.5" y="224.0">10.35</text></g><g class="bar" data-tip="Spain — peak 10.29 per 100k on 31 Jan 2021, 1,045 days reported"><text class="bar-label" x="140" y="250.0" text-anchor="end">Spain</text><path d="M 150 238 h 334.55745 a 4 4 0 0 1 4 4 v 8 a 4 4 0 0 1 -4 4 h -334.55745 Z" fill="var(--neutral-mark)" /><rect class="bar-hit" x="150" y="235" width="658" height="26" fill="transparent" /><text class="bar-value" x="496.6" y="250.0">10.29</text></g><g class="bar" data-tip="Romania — peak 9.67 per 100k on 7 Nov 2021, 150 days reported"><text class="bar-label" x="140" y="276.0" text-anchor="end">Romania</text><path d="M 150 264 h 314.30092 a 4 4 0 0 1 4 4 v 8 a 4 4 0 0 1 -4 4 h -314.30092 Z" fill="var(--neutral-mark)" /><rect class="bar-hit" x="150" y="261" width="658" height="26" fill="transparent" /><text class="bar-value" x="476.3" y="276.0">9.67</text></g><g class="bar" data-tip="Portugal — peak 8.80 per 100k on 5 Feb 2021, 765 days reported"><text class="bar-label" x="140" y="302.0" text-anchor="end">Portugal</text><path d="M 150 290 h 285.57264000000004 a 4 4 0 0 1 4 4 v 8 a 4 4 0 0 1 -4 4 h -285.57264000000004 Z" fill="var(--neutral-mark)" /><rect class="bar-hit" x="150" y="287" width="658" height="26" fill="transparent" /><text class="bar-value" x="447.6" y="302.0">8.8</text></g><g class="bar" data-tip="United States of America — peak 8.54 per 100k on 12 Jan 2021, 1,381 days reported"><text class="bar-label" x="140" y="328.0" text-anchor="end">United States of America</text><path d="M 150 316 h 276.97587000000004 a 4 4 0 0 1 4 4 v 8 a 4 4 0 0 1 -4 4 h -276.97587000000004 Z" fill="var(--neutral-mark)" /><rect class="bar-hit" x="150" y="313" width="658" height="26" fill="transparent" /><text class="bar-value" x="439.0" y="328.0">8.54</text></g><g class="bar" data-tip="Austria — peak 7.93 per 100k on 25 Nov 2020, 1,186 days reported"><text class="bar-label" x="140" y="354.0" text-anchor="end">Austria</text><path d="M 150 342 h 256.92990000000003 a 4 4 0 0 1 4 4 v 8 a 4 4 0 0 1 -4 4 h -256.92990000000003 Z" fill="var(--neutral-mark)" /><rect class="bar-hit" x="150" y="339" width="658" height="26" fill="transparent" /><text class="bar-value" x="418.9" y="354.0">7.93</text></g><g class="bar bar-highlight" data-tip="Australia — peak 1.62 per 100k on 18 Jan 2022, 1,347 days reported"><text class="bar-label is-highlight" x="140" y="380.0" text-anchor="end">Australia</text><path d="M 150 368 h 49.28813 a 4 4 0 0 1 4 4 v 8 a 4 4 0 0 1 -4 4 h -49.28813 Z" fill="var(--series-1)" /><rect class="bar-hit" x="150" y="365" width="658" height="26" fill="transparent" /><text class="bar-value" x="211.3" y="380.0">1.62 · rank 40 of 42</text></g></svg><div class="tooltip" hidden></div></div><p class="legend"><span><span class="swatch" style="background:var(--series-1)"></span>Australia</span><span><span class="swatch" style="background:var(--neutral-mark)"></span>Other reporting countries</span></p></div>
+
+<h2>Assurance &middot; the rates were checked, not trusted</h2>
+<p class="section-lede">
+  The publisher supplies a population-adjusted rate. The warehouse recomputes
+  it independently from World Bank population and keeps the difference as a
+  measure, so a denominator that changes upstream shows up as a failing test
+  rather than as a quietly wrong chart.
+</p>
+<div class="card"><div class="chart-wrap" data-hover="bar"><svg class="chart" viewBox="0 0 900 128" role="img" preserveAspectRatio="xMidYMid meet" aria-label="Ranked comparison"><g class="bar" data-tip="Within 1%: 54.65% of compared rows (54,292)"><text class="bar-label" x="100" y="18.0" text-anchor="end">Within 1%</text><path d="M 110 4 h 472.82124999999996 a 4 4 0 0 1 4 4 v 12 a 4 4 0 0 1 -4 4 h -472.82124999999996 Z" fill="var(--ord-1)" /><rect class="bar-hit" x="110" y="1" width="698" height="30" fill="transparent" /><text class="bar-value" x="594.8" y="18.0">54.65% (54,292 rows)</text></g><g class="bar" data-tip="1% to 5%: 42.34% of compared rows (42,062)"><text class="bar-label" x="100" y="48.0" text-anchor="end">1% to 5%</text><path d="M 110 34 h 365.4165 a 4 4 0 0 1 4 4 v 12 a 4 4 0 0 1 -4 4 h -365.4165 Z" fill="var(--ord-2)" /><rect class="bar-hit" x="110" y="31" width="698" height="30" fill="transparent" /><text class="bar-value" x="487.4" y="48.0">42.34% (42,062 rows)</text></g><g class="bar" data-tip="5% to 10%: 1.23% of compared rows (1,221)"><text class="bar-label" x="100" y="78.0" text-anchor="end">5% to 10%</text><path d="M 110 64 h 6.73175 a 4 4 0 0 1 4 4 v 12 a 4 4 0 0 1 -4 4 h -6.73175 Z" fill="var(--ord-3)" /><rect class="bar-hit" x="110" y="61" width="698" height="30" fill="transparent" /><text class="bar-value" x="128.7" y="78.0">1.23% (1,221 rows)</text></g><g class="bar" data-tip="Over 10%: 1.78% of compared rows (1,771)"><text class="bar-label" x="100" y="108.0" text-anchor="end">Over 10%</text><path d="M 110 94 h 11.5305 a 4 4 0 0 1 4 4 v 12 a 4 4 0 0 1 -4 4 h -11.5305 Z" fill="var(--ord-4)" /><rect class="bar-hit" x="110" y="91" width="698" height="30" fill="transparent" /><text class="bar-value" x="133.5" y="108.0">1.78% (1,771 rows)</text></g></svg><div class="tooltip" hidden></div></div>
+  <p class="legend"><span>Share of the 99,346 comparable fact rows falling in each agreement band</span></p>
+</div>
+<div class="card"><div class="table-scroll"><table><thead><tr><th class="">Location</th><th class="">Finding</th><th class="num">Publisher denominator</th><th class="num">World Bank population</th><th class="num">Median gap</th></tr></thead><tbody><tr><td class="">Cyprus</td><td class=""><span class="pill fail">Definitional mismatch</span></td><td class="num">904,704</td><td class="num">1,317,309</td><td class="num">-31.8%</td></tr><tr><td class="">Poland</td><td class=""><span class="pill warn">Vintage difference</span></td><td class="num">39,857,143</td><td class="num">36,981,559</td><td class="num">7.8%</td></tr><tr><td class="">Bulgaria</td><td class=""><span class="pill warn">Vintage difference</span></td><td class="num">6,781,955</td><td class="num">6,465,097</td><td class="num">4.9%</td></tr><tr><td class="">Singapore</td><td class=""><span class="pill warn">Vintage difference</span></td><td class="num">5,637,032</td><td class="num">5,917,648</td><td class="num">-4.7%</td></tr><tr><td class="">Croatia</td><td class=""><span class="pill warn">Vintage difference</span></td><td class="num">4,031,105</td><td class="num">3,878,981</td><td class="num">3.9%</td></tr><tr><td class="">Hungary</td><td class=""><span class="pill warn">Vintage difference</span></td><td class="num">9,953,316</td><td class="num">9,592,186</td><td class="num">3.8%</td></tr></tbody></table></div>
+  <p class="note">
+    <b>What the control caught.</b> Cyprus is not a rounding difference. The
+    publisher's implied denominator is about 896,000 against the World Bank's
+    1.32 million, because the hospital returns cover the government-controlled
+    area while the World Bank series covers the whole island. Poland's smaller
+    gap is the two sources sitting either side of the 2021 census revision.
+    Because the publisher aligns its denominator with the geography its
+    numerator came from, the comparison above uses the publisher's rate and
+    keeps the derived one as the control.
+  </p>
+</div>
+
+<h2>Warehouse</h2>
+<p class="section-lede">
+  Conformed dimensions, two facts at different grains, and four reporting
+  marts. Rebuilt in full on every run, so the build is idempotent.
+</p>
+<div class="card"><div class="table-scroll"><table><thead><tr><th class="">Model</th><th class="">Layer</th><th class="num">Rows</th><th class="num">Columns</th></tr></thead><tbody><tr><td class=""><code>dim_date</code></td><td class="">Dimension</td><td class="num">1,828</td><td class="num">18</td></tr><tr><td class=""><code>dim_indicator</code></td><td class="">Dimension</td><td class="num">5</td><td class="num">11</td></tr><tr><td class=""><code>dim_location</code></td><td class="">Dimension</td><td class="num">254</td><td class="num">13</td></tr><tr><td class=""><code>fct_hospital_activity</code></td><td class="">Fact</td><td class="num">115,262</td><td class="num">14</td></tr><tr><td class=""><code>fct_population_annual</code></td><td class="">Fact</td><td class="num">13,945</td><td class="num">5</td></tr><tr><td class=""><code>mart_location_coverage</code></td><td class="">Reporting mart</td><td class="num">139</td><td class="num">18</td></tr><tr><td class=""><code>mart_monthly_activity</code></td><td class="">Reporting mart</td><td class="num">5,191</td><td class="num">27</td></tr><tr><td class=""><code>mart_peak_pressure</code></td><td class="">Reporting mart</td><td class="num">139</td><td class="num">23</td></tr><tr><td class=""><code>mart_rate_reconciliation</code></td><td class="">Reporting mart</td><td class="num">127</td><td class="num">18</td></tr></tbody></table></div></div>
+
+<h2>Lineage</h2>
+<p class="section-lede">
+  Every ingestion is checksummed and recorded, so any figure on this page can
+  be traced back to a URL and a byte-for-byte payload.
+</p>
+<div class="card"><div class="table-scroll"><table><thead><tr><th class="">Source</th><th class="">URL</th><th class="num">Bytes</th><th class="">SHA-256</th><th class="">Fetched (UTC)</th></tr></thead><tbody><tr><td class=""><code>owid_hospitalisations</code></td><td class=""><a href="https://raw.githubusercontent.com/owid/covid-19-data/master/public/data/hospitalizations/covid-hospitalizations.csv" class="mono">covid-hospitalizations.csv</a></td><td class="num">14,185,001</td><td class=""><code class="trunc">80a748becac1114a…</code></td><td class=""><span class="mono">2026-09-04 02:38:26</span></td></tr><tr><td class=""><code>world_bank_population</code></td><td class=""><a href="https://raw.githubusercontent.com/datasets/population/main/data/population.csv" class="mono">population.csv</a></td><td class="num">552,112</td><td class=""><code class="trunc">7d2dd6a17f5ed791…</code></td><td class=""><span class="mono">2026-09-04 02:38:26</span></td></tr><tr><td class=""><code>iso_3166_countries</code></td><td class=""><a href="https://raw.githubusercontent.com/lukes/ISO-3166-Countries-with-Regional-Codes/master/all/all.csv" class="mono">all.csv</a></td><td class="num">20,730</td><td class=""><code class="trunc">347bba35029f804f…</code></td><td class=""><span class="mono">2026-09-04 02:38:26</span></td></tr></tbody></table></div></div>
+
+<h2>Data quality suite</h2>
+<p class="section-lede">
+  29 declarative assertions covering key uniqueness, the
+  declared fact grain, referential integrity across the star, domain values,
+  business rules and the reconciliation control above.
+</p>
+<div class="card"><div class="table-scroll"><table><thead><tr><th class="">Test</th><th class="">Model</th><th class="">Type</th><th class="">Severity</th><th class="">Result</th></tr></thead><tbody><tr><td class=""><code>activity_values_are_not_negative</code></td><td class=""><code class="trunc">fct_hospital_activity</code></td><td class="">expression</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>coverage_grades_are_known</code></td><td class=""><code class="trunc">mart_location_coverage</code></td><td class="">accepted_values</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>derived_rate_reconciles_with_publisher</code></td><td class=""><code class="trunc">-</code></td><td class="">sql</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>dim_date_full_date_not_null</code></td><td class=""><code class="trunc">dim_date</code></td><td class="">not_null</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>dim_date_is_gapless</code></td><td class=""><code class="trunc">-</code></td><td class="">sql</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>dim_date_key_is_unique</code></td><td class=""><code class="trunc">dim_date</code></td><td class="">unique</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>dim_indicator_care_settings_are_known</code></td><td class=""><code class="trunc">dim_indicator</code></td><td class="">accepted_values</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>dim_indicator_code_is_unique</code></td><td class=""><code class="trunc">dim_indicator</code></td><td class="">unique</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>dim_indicator_key_is_unique</code></td><td class=""><code class="trunc">dim_indicator</code></td><td class="">unique</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>dim_indicator_semantics_are_known</code></td><td class=""><code class="trunc">dim_indicator</code></td><td class="">accepted_values</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>dim_location_key_is_unique</code></td><td class=""><code class="trunc">dim_location</code></td><td class="">unique</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>dim_location_natural_key_is_unique</code></td><td class=""><code class="trunc">dim_location</code></td><td class="">unique</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>dim_location_types_are_known</code></td><td class=""><code class="trunc">dim_location</code></td><td class="">accepted_values</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>dimensions_are_populated</code></td><td class=""><code class="trunc">dim_location</code></td><td class="">row_count</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>event_dates_are_plausible</code></td><td class=""><code class="trunc">fct_hospital_activity</code></td><td class="">expression</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>every_source_was_ingested_this_run</code></td><td class=""><code class="trunc">-</code></td><td class="">sql</td><td class="">warn</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>fact_volume_is_plausible</code></td><td class=""><code class="trunc">fct_hospital_activity</code></td><td class="">row_count</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>fct_activity_date_key_resolves</code></td><td class=""><code class="trunc">fct_hospital_activity</code></td><td class="">relationships</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>fct_activity_grain_is_unique</code></td><td class=""><code class="trunc">fct_hospital_activity</code></td><td class="">unique_combination</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>fct_activity_has_no_unknown_members</code></td><td class=""><code class="trunc">fct_hospital_activity</code></td><td class="">expression</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>fct_activity_indicator_key_resolves</code></td><td class=""><code class="trunc">fct_hospital_activity</code></td><td class="">relationships</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>fct_activity_location_key_resolves</code></td><td class=""><code class="trunc">fct_hospital_activity</code></td><td class="">relationships</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>fct_population_grain_is_unique</code></td><td class=""><code class="trunc">fct_population_annual</code></td><td class="">unique_combination</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>fct_population_location_key_resolves</code></td><td class=""><code class="trunc">fct_population_annual</code></td><td class="">relationships</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>no_new_denominator_mismatches</code></td><td class=""><code class="trunc">-</code></td><td class="">sql</td><td class="">warn</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>per_100k_is_consistent_with_per_million</code></td><td class=""><code class="trunc">fct_hospital_activity</code></td><td class="">expression</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>population_is_positive</code></td><td class=""><code class="trunc">fct_population_annual</code></td><td class="">expression</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>reporting_locations_are_all_classified</code></td><td class=""><code class="trunc">dim_location</code></td><td class="">expression</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>series_has_not_regressed</code></td><td class=""><code class="trunc">-</code></td><td class="">sql</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr></tbody></table></div></div>
+
+<footer>
+  <p>
+    Generated by <code>python -m pipelines.cli all</code>.
+    Pipeline code MIT licensed; source data remains under its publishers'
+    licences (Our World in Data CC BY 4.0, World Bank CC BY 4.0,
+    ISO 3166 country codes CC BY-SA 4.0).
+  </p>
+  <p>
+    COVID-19 hospital and ICU activity as compiled by Our World in Data from
+    national health agencies. Reporting coverage varies by country and the
+    upstream series closed in August 2024; see the coverage grades in the
+    warehouse for per-country completeness.
+  </p>
+</footer>
+
+</div>
+<script>
+(function () {
+  function place(tip, wrap, x, y, html) {
+    tip.innerHTML = html;
+    tip.hidden = false;
+    var w = wrap.getBoundingClientRect();
+    var t = tip.getBoundingClientRect();
+    var half = t.width / 2;
+    var clamped = Math.max(half + 4, Math.min(x, w.width - half - 4));
+    tip.style.left = clamped + "px";
+    tip.style.top = y + "px";
+  }
+
+  document.querySelectorAll('[data-hover="line"]').forEach(function (wrap) {
+    var svg = wrap.querySelector("svg");
+    var tip = wrap.querySelector(".tooltip");
+    var meta = JSON.parse(wrap.getAttribute("data-series"));
+    if (!svg || !meta.points.length) return;
+
+    var ns = "http://www.w3.org/2000/svg";
+    var rule = document.createElementNS(ns, "line");
+    rule.setAttribute("class", "crosshair");
+    rule.setAttribute("y1", meta.top);
+    rule.setAttribute("y2", meta.top + meta.plotHeight);
+    rule.style.display = "none";
+    svg.appendChild(rule);
+
+    var dot = document.createElementNS(ns, "circle");
+    dot.setAttribute("r", "4.5");
+    dot.setAttribute("fill", "var(--surface-1)");
+    dot.setAttribute("stroke-width", "2.5");
+    dot.style.display = "none";
+    svg.appendChild(dot);
+
+    function nearest(event) {
+      var box = svg.getBoundingClientRect();
+      var vb = svg.viewBox.baseVal;
+      var x = ((event.clientX - box.left) / box.width) * vb.width;
+      var index = Math.round((x - meta.left) / meta.step);
+      return Math.max(0, Math.min(meta.points.length - 1, index));
+    }
+
+    svg.addEventListener("mousemove", function (event) {
+      var point = meta.points[nearest(event)];
+      rule.setAttribute("x1", point.x);
+      rule.setAttribute("x2", point.x);
+      rule.style.display = "";
+      dot.setAttribute("cx", point.x);
+      dot.setAttribute("cy", point.y);
+      dot.setAttribute("stroke", getComputedStyle(svg.querySelector("path[stroke]")).stroke);
+      dot.style.display = "";
+      var box = svg.getBoundingClientRect();
+      var scale = box.width / svg.viewBox.baseVal.width;
+      place(tip, wrap, point.x * scale, point.y * scale,
+            "<b>" + point.label + "</b><br>" + (point.tip || point.value));
+    });
+    svg.addEventListener("mouseleave", function () {
+      tip.hidden = true; rule.style.display = "none"; dot.style.display = "none";
+    });
+  });
+
+  document.querySelectorAll('[data-hover="bar"]').forEach(function (wrap) {
+    var tip = wrap.querySelector(".tooltip");
+    wrap.querySelectorAll(".bar").forEach(function (bar) {
+      bar.addEventListener("mousemove", function (event) {
+        var box = wrap.getBoundingClientRect();
+        place(tip, wrap, event.clientX - box.left, event.clientY - box.top,
+              bar.getAttribute("data-tip"));
+      });
+      bar.addEventListener("mouseleave", function () { tip.hidden = true; });
+    });
+  });
+})();
+</script>
+</body>
+</html>

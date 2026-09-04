@@ -1,0 +1,102 @@
+# ---------------------------------------------------------------------------
+# Source registry
+# ---------------------------------------------------------------------------
+# Every dataset the pipeline knows how to ingest is declared here. Adding a
+# source is a config change, not a code change: `pipelines/ingest.py` reads
+# this file, fetches each enabled source, checksums it and records the run in
+# the ingestion manifest.
+#
+# See docs/adding_a_source.md for the full walkthrough.
+# ---------------------------------------------------------------------------
+
+defaults:
+  timeout_seconds: 120
+  max_retries: 4
+  backoff_seconds: 2      # doubles each attempt: 2s, 4s, 8s, 16s
+
+sources:
+
+  - name: owid_hospitalisations
+    title: COVID-19 hospital and ICU activity
+    publisher: Our World in Data
+    licence: CC BY 4.0
+    licence_url: https://github.com/owid/covid-19-data/blob/master/LICENSE
+    homepage: https://github.com/owid/covid-19-data/tree/master/public/data/hospitalizations
+    url: https://raw.githubusercontent.com/owid/covid-19-data/master/public/data/hospitalizations/covid-hospitalizations.csv
+    format: csv
+    landing_file: owid_hospitalisations.csv
+    enabled: true
+    role: fact
+    description: >
+      Daily and weekly hospital / ICU occupancy and admissions for ~50
+      reporting countries, compiled by Our World in Data from national health
+      agencies. Long ("tidy") format: one row per entity, date and indicator.
+    expected_columns: [entity, iso_code, date, indicator, value]
+    min_rows: 100000
+
+  - name: iso_3166_countries
+    title: ISO 3166-1 country codes with UN regional groupings
+    publisher: Luke Duncalfe (compiled from ISO 3166-1 and UN M49)
+    licence: CC BY-SA 4.0
+    licence_url: https://github.com/lukes/ISO-3166-Countries-with-Regional-Codes/blob/master/LICENSE.md
+    homepage: https://github.com/lukes/ISO-3166-Countries-with-Regional-Codes
+    url: https://raw.githubusercontent.com/lukes/ISO-3166-Countries-with-Regional-Codes/master/all/all.csv
+    format: csv
+    landing_file: iso_3166_countries.csv
+    enabled: true
+    role: dimension
+    description: >
+      Reference data used to enrich the location dimension with alpha-2 /
+      alpha-3 codes and UN region, sub-region and intermediate-region
+      groupings. Provides the conformed geography hierarchy.
+    expected_columns: [name, alpha-2, alpha-3, country-code, region, sub-region]
+    min_rows: 200
+
+  - name: world_bank_population
+    title: Total population by country and year
+    publisher: World Bank (World Development Indicators, SP.POP.TOTL)
+    licence: CC BY 4.0
+    licence_url: https://datahub.io/core/population
+    homepage: https://github.com/datasets/population
+    url: https://raw.githubusercontent.com/datasets/population/main/data/population.csv
+    format: csv
+    landing_file: world_bank_population.csv
+    enabled: true
+    role: dimension
+    description: >
+      Annual mid-year population estimates, 1960 onwards. Used to build the
+      annual population snapshot fact so the warehouse can derive its own
+      population-adjusted rates instead of trusting the publisher's.
+    expected_columns: ["Country Name", "Country Code", "Year", "Value"]
+    min_rows: 15000
+
+  # -------------------------------------------------------------------------
+  # Template: Australian Institute of Health and Welfare (AIHW)
+  # -------------------------------------------------------------------------
+  # Disabled by default. AIHW publishes most collections as XLSX data-download
+  # workbooks rather than stable CSV endpoints, so the URL has to be taken from
+  # the specific release you want and pinned here. Two ways to enable it:
+  #
+  #   1. Set `url` to the AIHW data-download link and flip `enabled: true`.
+  #   2. Download the workbook by hand into data/raw/ and set
+  #      `url: file://data/raw/aihw_hospital_activity.xlsx`.
+  #
+  # Either way you also need a staging handler - see docs/adding_a_source.md,
+  # which walks through the AIHW case specifically.
+  - name: aihw_hospital_activity
+    title: AIHW hospital activity (template - not part of the reference run)
+    publisher: Australian Institute of Health and Welfare
+    licence: CC BY 4.0
+    licence_url: https://www.aihw.gov.au/copyright
+    homepage: https://www.aihw.gov.au/reports-data/myhospitals/content/about-the-data
+    url: null                 # <- pin the release URL or a file:// path here
+    format: xlsx
+    landing_file: aihw_hospital_activity.xlsx
+    enabled: false
+    role: fact
+    description: >
+      Placeholder for an AIHW extract (e.g. MyHospitals admitted patient care
+      or emergency department activity). Left disabled so the reference run
+      stays fully reproducible from open, stable URLs.
+    expected_columns: []
+    min_rows: 0

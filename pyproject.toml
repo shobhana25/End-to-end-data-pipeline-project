@@ -1,0 +1,59 @@
+[project]
+name = "health-capacity-pipeline"
+version = "1.0.0"
+description = "End-to-end data pipeline: public health data to a dimensional warehouse and a published dashboard"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+dependencies = [
+    "duckdb>=1.1",
+    "pandas>=2.2",
+    "pyarrow>=16",
+    "requests>=2.31",
+    "PyYAML>=6",
+]
+
+[project.optional-dependencies]
+dashboard = ["streamlit>=1.36", "altair>=5.3"]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+health-pipeline = "pipelines.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["pipelines"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+filterwarnings = ["error::DeprecationWarning:pipelines.*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["docs"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # import sorting
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "SIM",  # simplify
+    "C4",   # comprehensions
+    "RUF",  # ruff-specific
+]
+ignore = [
+    "E501",  # line length is enforced by the formatter, not the linter
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests reach into private helpers on purpose, and Streamlit needs its
+# sys.path shim before importing project modules.
+"tests/*" = ["SIM117"]
+"dashboard/app.py" = ["E402"]

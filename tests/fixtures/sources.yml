@@ -1,0 +1,49 @@
+# Offline source registry used by the test suite and by CI.
+#
+# It points at the small committed fixtures via file:// URLs, which keeps the
+# whole pipeline runnable with no network access - and exercises the ingest
+# layer's local-file branch at the same time. The fixtures are genuine rows
+# sampled from the real feeds, so the shapes and quirks (the OWID_ENG non-ISO
+# code, the World Bank aggregate rows, Cyprus's denominator mismatch) are all
+# still present at a size that runs in under a second.
+defaults:
+  timeout_seconds: 10
+  max_retries: 1
+  backoff_seconds: 1
+
+sources:
+  - name: owid_hospitalisations
+    title: COVID-19 hospital and ICU activity (fixture)
+    publisher: Our World in Data
+    licence: CC BY 4.0
+    url: file://tests/fixtures/owid_hospitalisations.csv
+    format: csv
+    landing_file: owid_hospitalisations.csv
+    enabled: true
+    role: fact
+    expected_columns: [entity, iso_code, date, indicator, value]
+    min_rows: 500
+
+  - name: iso_3166_countries
+    title: ISO 3166-1 country codes (fixture)
+    publisher: ISO 3166-1 / UN M49
+    licence: CC BY-SA 4.0
+    url: file://tests/fixtures/iso_3166_countries.csv
+    format: csv
+    landing_file: iso_3166_countries.csv
+    enabled: true
+    role: dimension
+    expected_columns: [name, alpha-2, alpha-3, country-code, region, sub-region]
+    min_rows: 5
+
+  - name: world_bank_population
+    title: Total population (fixture)
+    publisher: World Bank
+    licence: CC BY 4.0
+    url: file://tests/fixtures/world_bank_population.csv
+    format: csv
+    landing_file: world_bank_population.csv
+    enabled: true
+    role: dimension
+    expected_columns: ["Country Name", "Country Code", "Year", "Value"]
+    min_rows: 20
