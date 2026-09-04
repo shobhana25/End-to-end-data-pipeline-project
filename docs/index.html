@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Star-schema warehouse of hospital and ICU capacity built from three public datasets, with reconciliation and quality tests.">
+<meta name="description" content="How full hospitals and intensive care units were during COVID-19, in Australia and 49 other reporting places.">
 <style>img{max-width:100%}[hidden]{display:none!important}</style>
 <title>Hospital Capacity Warehouse</title>
 <style>
@@ -112,7 +112,6 @@ h2 {
 .tile-value { font-size: 27px; font-weight: 640; letter-spacing: -0.02em; line-height: 1.1; }
 .tile-label { font-size: 12.5px; color: var(--text-muted); margin-top: 5px; }
 .tile-note { font-size: 12.5px; color: var(--text-secondary); margin-top: 3px; }
-.tile-value.is-good { color: var(--good); }
 
 .panel { margin: 0; }
 .panel + .panel { margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--border); }
@@ -161,7 +160,6 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monosp
   font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 999px;
   border: 1px solid var(--border); white-space: nowrap;
 }
-.pill.pass { color: var(--good); }
 .pill.warn { color: var(--warning); }
 .pill.fail { color: var(--critical); }
 .pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
@@ -173,27 +171,7 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monosp
 .note b { color: var(--text-primary); }
 .note + .note { border-left-color: var(--axis); }
 
-.quality-summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px 14px; }
-.quality-note { color: var(--text-secondary); font-size: 14px; max-width: 68ch; }
 
-details { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
-details summary {
-  cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text-secondary);
-  list-style: none; display: inline-flex; align-items: center; gap: 7px;
-  padding: 4px 2px; border-radius: 6px;
-}
-details summary::-webkit-details-marker { display: none; }
-details summary::before {
-  content: "▸"; font-size: 11px; color: var(--text-muted);
-  transition: transform 0.15s ease;
-}
-details[open] summary::before { transform: rotate(90deg); }
-details summary:hover { color: var(--text-primary); }
-details summary:focus-visible { outline: 2px solid var(--series-1); outline-offset: 2px; }
-details > .table-scroll { margin-top: 12px; }
-@media (prefers-reduced-motion: reduce) {
-  details summary::before { transition: none; }
-}
 
 footer { margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 13px; }
 footer a { color: var(--text-secondary); }
@@ -226,11 +204,11 @@ a { color: var(--series-1); }
     straight from the database on each run, so no number below is typed by hand.
   </p>
   <p class="masthead-meta">
-    <span>Rebuilt from source data 2026-09-04 04:56:04 UTC</span>
+    <span>Rebuilt from source data 2026-09-04 05:07:07 UTC</span>
   </p>
 </header>
 
-<div class="tiles"><div class="tile"><div class="tile-value">115,262</div><div class="tile-label">Daily observations</div><div class="tile-note">one per place, day and measure</div></div><div class="tile"><div class="tile-value">50</div><div class="tile-label">Places reporting</div><div class="tile-note">countries, plus the four UK nations</div></div><div class="tile"><div class="tile-value">2020 – 2024</div><div class="tile-label">Period covered</div><div class="tile-note">6 Jan 2020 to 12 Aug 2024</div></div><div class="tile"><div class="tile-value is-good">29/29</div><div class="tile-label">Automated checks passed</div><div class="tile-note">none failing</div></div></div>
+<div class="tiles"><div class="tile"><div class="tile-value">115,262</div><div class="tile-label">Daily observations</div><div class="tile-note">one per place, day and measure</div></div><div class="tile"><div class="tile-value">50</div><div class="tile-label">Places reporting</div><div class="tile-note">countries, plus the four UK nations</div></div><div class="tile"><div class="tile-value">2020 – 2024</div><div class="tile-label">Period covered</div><div class="tile-note">6 Jan 2020 to 12 Aug 2024</div></div></div>
 
 <h2>Australia in detail</h2>
 <p class="section-lede">
@@ -280,29 +258,6 @@ a { color: var(--series-1); }
     background check. Both cases are now automated tests, so a new mismatch
     would be caught rather than published.
   </p>
-</div>
-
-<h2>How this was built</h2>
-<p class="section-lede">
-  Three public datasets are downloaded, cleaned, and loaded into a small
-  database organised as a star schema: three reference tables describing dates,
-  places and measures, and two tables of measurements that join to them. It is
-  rebuilt from scratch on every run.
-</p>
-<div class="card"><div class="table-scroll"><table><thead><tr><th class="">Model</th><th class="">Layer</th><th class="num">Rows</th><th class="num">Columns</th></tr></thead><tbody><tr><td class=""><code>dim_date</code></td><td class="">Dimension</td><td class="num">1,828</td><td class="num">18</td></tr><tr><td class=""><code>dim_indicator</code></td><td class="">Dimension</td><td class="num">5</td><td class="num">11</td></tr><tr><td class=""><code>dim_location</code></td><td class="">Dimension</td><td class="num">254</td><td class="num">13</td></tr><tr><td class=""><code>fct_hospital_activity</code></td><td class="">Fact</td><td class="num">115,262</td><td class="num">14</td></tr><tr><td class=""><code>fct_population_annual</code></td><td class="">Fact</td><td class="num">13,945</td><td class="num">5</td></tr><tr><td class=""><code>mart_location_coverage</code></td><td class="">Reporting mart</td><td class="num">139</td><td class="num">18</td></tr><tr><td class=""><code>mart_monthly_activity</code></td><td class="">Reporting mart</td><td class="num">5,191</td><td class="num">27</td></tr><tr><td class=""><code>mart_peak_pressure</code></td><td class="">Reporting mart</td><td class="num">139</td><td class="num">23</td></tr><tr><td class=""><code>mart_rate_reconciliation</code></td><td class="">Reporting mart</td><td class="num">127</td><td class="num">18</td></tr></tbody></table></div></div>
-<div class="card">
-  <div class="quality-summary">
-    <span class="pill pass">29 of 29 checks passed</span>
-    <span class="quality-note">
-      Covering unique keys, valid joins between tables, permitted values,
-      plausible measurements, and the population cross-check above. A failure
-      stops the run before this page is refreshed.
-    </span>
-  </div>
-  <details>
-    <summary>See all 29 checks</summary>
-    <div class="table-scroll"><table><thead><tr><th class="">Test</th><th class="">Model</th><th class="">Type</th><th class="">Severity</th><th class="">Result</th></tr></thead><tbody><tr><td class=""><code>activity_values_are_not_negative</code></td><td class=""><code class="trunc">fct_hospital_activity</code></td><td class="">expression</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>coverage_grades_are_known</code></td><td class=""><code class="trunc">mart_location_coverage</code></td><td class="">accepted_values</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>derived_rate_reconciles_with_publisher</code></td><td class=""><code class="trunc">-</code></td><td class="">sql</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>dim_date_full_date_not_null</code></td><td class=""><code class="trunc">dim_date</code></td><td class="">not_null</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>dim_date_is_gapless</code></td><td class=""><code class="trunc">-</code></td><td class="">sql</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>dim_date_key_is_unique</code></td><td class=""><code class="trunc">dim_date</code></td><td class="">unique</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>dim_indicator_care_settings_are_known</code></td><td class=""><code class="trunc">dim_indicator</code></td><td class="">accepted_values</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>dim_indicator_code_is_unique</code></td><td class=""><code class="trunc">dim_indicator</code></td><td class="">unique</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>dim_indicator_key_is_unique</code></td><td class=""><code class="trunc">dim_indicator</code></td><td class="">unique</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>dim_indicator_semantics_are_known</code></td><td class=""><code class="trunc">dim_indicator</code></td><td class="">accepted_values</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>dim_location_key_is_unique</code></td><td class=""><code class="trunc">dim_location</code></td><td class="">unique</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>dim_location_natural_key_is_unique</code></td><td class=""><code class="trunc">dim_location</code></td><td class="">unique</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>dim_location_types_are_known</code></td><td class=""><code class="trunc">dim_location</code></td><td class="">accepted_values</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>dimensions_are_populated</code></td><td class=""><code class="trunc">dim_location</code></td><td class="">row_count</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>event_dates_are_plausible</code></td><td class=""><code class="trunc">fct_hospital_activity</code></td><td class="">expression</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>every_source_was_ingested_this_run</code></td><td class=""><code class="trunc">-</code></td><td class="">sql</td><td class="">warn</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>fact_volume_is_plausible</code></td><td class=""><code class="trunc">fct_hospital_activity</code></td><td class="">row_count</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>fct_activity_date_key_resolves</code></td><td class=""><code class="trunc">fct_hospital_activity</code></td><td class="">relationships</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>fct_activity_grain_is_unique</code></td><td class=""><code class="trunc">fct_hospital_activity</code></td><td class="">unique_combination</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>fct_activity_has_no_unknown_members</code></td><td class=""><code class="trunc">fct_hospital_activity</code></td><td class="">expression</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>fct_activity_indicator_key_resolves</code></td><td class=""><code class="trunc">fct_hospital_activity</code></td><td class="">relationships</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>fct_activity_location_key_resolves</code></td><td class=""><code class="trunc">fct_hospital_activity</code></td><td class="">relationships</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>fct_population_grain_is_unique</code></td><td class=""><code class="trunc">fct_population_annual</code></td><td class="">unique_combination</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>fct_population_location_key_resolves</code></td><td class=""><code class="trunc">fct_population_annual</code></td><td class="">relationships</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>no_new_denominator_mismatches</code></td><td class=""><code class="trunc">-</code></td><td class="">sql</td><td class="">warn</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>per_100k_is_consistent_with_per_million</code></td><td class=""><code class="trunc">fct_hospital_activity</code></td><td class="">expression</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>population_is_positive</code></td><td class=""><code class="trunc">fct_population_annual</code></td><td class="">expression</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>reporting_locations_are_all_classified</code></td><td class=""><code class="trunc">dim_location</code></td><td class="">expression</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr><tr><td class=""><code>series_has_not_regressed</code></td><td class=""><code class="trunc">-</code></td><td class="">sql</td><td class="">error</td><td class=""><span class="pill pass">pass</span></td></tr></tbody></table></div>
-  </details>
 </div>
 
 <footer>

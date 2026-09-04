@@ -42,9 +42,6 @@ class DashboardData:
     peak_ranking: list[dict]
     variance_bands: list[dict]
     denominator_notes: list[dict]
-    quality: list[dict]
-    quality_summary: dict
-    model_rows: list[dict]
 
 
 def _rows(connection, sql: str, params: list | None = None) -> list[dict]:
@@ -175,50 +172,6 @@ def collect(layout: Paths | None = None, focus: str = DEFAULT_FOCUS) -> Dashboar
             """,
         )
 
-        quality: list[dict] = []
-        quality_summary: dict = {}
-        has_quality = _one(
-            connection,
-            "SELECT count(*) AS n FROM duckdb_tables() WHERE table_name = 'meta_quality_results'",
-        ).get("n", 0)
-        if has_quality:
-            quality = _rows(
-                connection,
-                """
-                SELECT test_name, model, test_type, severity, status, failing_rows, description
-                FROM meta_quality_results
-                WHERE run_id = (SELECT run_id FROM meta_quality_results
-                                ORDER BY executed_at DESC, rowid DESC LIMIT 1)
-                ORDER BY CASE status WHEN 'fail' THEN 0 WHEN 'error' THEN 1 ELSE 2 END, test_name
-                """,
-            )
-            quality_summary = _one(
-                connection,
-                """
-                SELECT count(*) AS total,
-                       sum(CASE WHEN status = 'pass' THEN 1 ELSE 0 END) AS passed,
-                       sum(CASE WHEN status <> 'pass' AND severity = 'error' THEN 1 ELSE 0 END) AS blocking,
-                       sum(CASE WHEN status <> 'pass' AND severity = 'warn' THEN 1 ELSE 0 END) AS warnings,
-                       max(executed_at) AS executed_at
-                FROM meta_quality_results
-                WHERE run_id = (SELECT run_id FROM meta_quality_results
-                                ORDER BY executed_at DESC, rowid DESC LIMIT 1)
-                """,
-            )
-
-        model_rows = _rows(
-            connection,
-            """
-            SELECT table_name AS model, estimated_size AS rows_estimate, column_count
-            FROM duckdb_tables()
-            WHERE table_name NOT LIKE 'meta_%'
-            ORDER BY CASE
-                        WHEN table_name LIKE 'dim_%'  THEN 1
-                        WHEN table_name LIKE 'fct_%'  THEN 2
-                        ELSE 3 END, table_name
-            """,
-        )
-
     return DashboardData(
         focus_code=focus,
         focus_name=focus_name,
@@ -228,9 +181,6 @@ def collect(layout: Paths | None = None, focus: str = DEFAULT_FOCUS) -> Dashboar
         peak_ranking=peak_ranking,
         variance_bands=variance_bands,
         denominator_notes=denominator_notes,
-        quality=quality,
-        quality_summary=quality_summary,
-        model_rows=model_rows,
     )
 
 
@@ -344,7 +294,6 @@ h2 {
 .tile-value { font-size: 27px; font-weight: 640; letter-spacing: -0.02em; line-height: 1.1; }
 .tile-label { font-size: 12.5px; color: var(--text-muted); margin-top: 5px; }
 .tile-note { font-size: 12.5px; color: var(--text-secondary); margin-top: 3px; }
-.tile-value.is-good { color: var(--good); }
 
 .panel { margin: 0; }
 .panel + .panel { margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--border); }
@@ -393,7 +342,6 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monosp
   font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 999px;
   border: 1px solid var(--border); white-space: nowrap;
 }
-.pill.pass { color: var(--good); }
 .pill.warn { color: var(--warning); }
 .pill.fail { color: var(--critical); }
 .pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
@@ -405,27 +353,7 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monosp
 .note b { color: var(--text-primary); }
 .note + .note { border-left-color: var(--axis); }
 
-.quality-summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px 14px; }
-.quality-note { color: var(--text-secondary); font-size: 14px; max-width: 68ch; }
 
-details { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
-details summary {
-  cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text-secondary);
-  list-style: none; display: inline-flex; align-items: center; gap: 7px;
-  padding: 4px 2px; border-radius: 6px;
-}
-details summary::-webkit-details-marker { display: none; }
-details summary::before {
-  content: "▸"; font-size: 11px; color: var(--text-muted);
-  transition: transform 0.15s ease;
-}
-details[open] summary::before { transform: rotate(90deg); }
-details summary:hover { color: var(--text-primary); }
-details summary:focus-visible { outline: 2px solid var(--series-1); outline-offset: 2px; }
-details > .table-scroll { margin-top: 12px; }
-@media (prefers-reduced-motion: reduce) {
-  details summary::before { transition: none; }
-}
 
 footer { margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 13px; }
 footer a { color: var(--text-secondary); }
@@ -526,9 +454,9 @@ def _date(value) -> str:
     return value.strftime("%-d %b %Y") if hasattr(value, "strftime") else str(value)[:10]
 
 
-def _tile(value: str, label: str, note: str = "", good: bool = False) -> str:
+def _tile(value: str, label: str, note: str = "") -> str:
     return (
-        f'<div class="tile"><div class="tile-value{" is-good" if good else ""}">{value}</div>'
+        f'<div class="tile"><div class="tile-value">{value}</div>'
         f'<div class="tile-label">{esc(label)}</div>'
         + (f'<div class="tile-note">{esc(note)}</div>' if note else "")
         + "</div>"
@@ -554,20 +482,9 @@ def _table(headers: list[tuple[str, bool]], rows: list[list[str]]) -> str:
 def render_body(data: DashboardData) -> str:
     """Assemble the page content (title + style + markup), without a document shell."""
     s = data.stats
-    q = data.quality_summary or {}
     focus = esc(data.focus_name)
 
     # -- Stat tiles ---------------------------------------------------------
-    quality_tile = (
-        _tile(
-            f"{_n(q.get('passed'))}/{_n(q.get('total'))}",
-            "Automated checks passed",
-            "none failing" if not q.get("blocking") else f"{_n(q.get('blocking'))} failing",
-            good=not q.get("blocking"),
-        )
-        if q
-        else ""
-    )
     tiles = (
         _tile(_n(s.get("fact_rows")), "Daily observations", "one per place, day and measure")
         + _tile(_n(s.get("locations")), "Places reporting", "countries, plus the four UK nations")
@@ -576,7 +493,6 @@ def render_body(data: DashboardData) -> str:
             "Period covered",
             f"{_date(s.get('first_date'))} to {_date(s.get('last_date'))}",
         )
-        + quality_tile
     )
 
     # -- Focus country small multiples --------------------------------------
@@ -680,48 +596,6 @@ def render_body(data: DashboardData) -> str:
     )
 
     # -- Lineage and quality ------------------------------------------------
-    quality_table = _table(
-        [
-            ("Test", False),
-            ("Model", False),
-            ("Type", False),
-            ("Severity", False),
-            ("Result", False),
-        ],
-        [
-            [
-                f"<code>{esc(row['test_name'])}</code>",
-                f'<code class="trunc">{esc(row["model"])}</code>',
-                esc(row["test_type"]),
-                esc(row["severity"]),
-                (
-                    '<span class="pill pass">pass</span>'
-                    if row["status"] == "pass"
-                    else f'<span class="pill {"warn" if row["severity"] == "warn" else "fail"}">'
-                    f"{esc(row['status'])} · {_n(row['failing_rows'])} rows</span>"
-                ),
-            ]
-            for row in data.quality
-        ],
-    )
-
-    model_table = _table(
-        [("Model", False), ("Layer", False), ("Rows", True), ("Columns", True)],
-        [
-            [
-                f"<code>{esc(row['model'])}</code>",
-                "Dimension"
-                if row["model"].startswith("dim_")
-                else "Fact"
-                if row["model"].startswith("fct_")
-                else "Reporting mart",
-                _n(row["rows_estimate"]),
-                _n(row["column_count"]),
-            ]
-            for row in data.model_rows
-        ],
-    )
-
     built = str(s.get("built_at") or "")[:19].replace("T", " ")
 
     return f"""<title>{PAGE_TITLE}</title>
@@ -800,29 +674,6 @@ def render_body(data: DashboardData) -> str:
   </p>
 </div>
 
-<h2>How this was built</h2>
-<p class="section-lede">
-  Three public datasets are downloaded, cleaned, and loaded into a small
-  database organised as a star schema: three reference tables describing dates,
-  places and measures, and two tables of measurements that join to them. It is
-  rebuilt from scratch on every run.
-</p>
-<div class="card">{model_table}</div>
-<div class="card">
-  <div class="quality-summary">
-    <span class="pill pass">{_n(q.get("passed"))} of {_n(q.get("total"))} checks passed</span>
-    <span class="quality-note">
-      Covering unique keys, valid joins between tables, permitted values,
-      plausible measurements, and the population cross-check above. A failure
-      stops the run before this page is refreshed.
-    </span>
-  </div>
-  <details>
-    <summary>See all {_n(q.get("total"))} checks</summary>
-    {quality_table}
-  </details>
-</div>
-
 <footer>
   <p>
     <b>Data.</b> COVID-19 hospital and intensive care activity compiled by
@@ -854,8 +705,8 @@ def render_page(data: DashboardData) -> str:
         "<!doctype html>\n"
         '<html lang="en">\n<head>\n<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
-        '<meta name="description" content="Star-schema warehouse of hospital and ICU '
-        'capacity built from three public datasets, with reconciliation and quality tests.">\n'
+        '<meta name="description" content="How full hospitals and intensive care '
+        'units were during COVID-19, in Australia and 49 other reporting places.">\n'
         "<style>img{max-width:100%}[hidden]{display:none!important}</style>\n"
         f"{head_styles}</style>\n</head>\n<body>\n{markup}\n</body>\n</html>\n"
     )

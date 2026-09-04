@@ -105,9 +105,17 @@ def test_dashboard_uses_no_em_dashes(rendered):
         assert form not in rendered, f"em dash ({form}) in the published page"
 
 
-def test_dashboard_surfaces_the_quality_result(rendered):
-    assert "quality" in rendered.lower()
-    assert "pass" in rendered.lower()
+def test_dashboard_has_exactly_the_intended_sections(rendered):
+    """The page is an analysis, not a build report. The warehouse internals and
+    the check results live in the repository and the database, deliberately not
+    here, so this pins the section list rather than letting it creep back."""
+    headings = re.findall(r"<h2>(.*?)</h2>", rendered)
+    assert len(headings) == 3, headings
+    assert "in detail" in headings[0]
+    assert headings[1] == "International context"
+    assert headings[2] == "Checking the numbers"
+    for gone in ("How this was built", "checks passed", "Data quality tests"):
+        assert gone not in rendered, f"{gone!r} is back on the page"
 
 
 def test_dashboard_can_lead_with_a_different_country(build_runs, pipeline_modules, tmp_path):
